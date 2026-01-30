@@ -1,4 +1,4 @@
-// Package downloader provides a high-level API for downloading files using aria2go.
+// Package downloader provides a high-level API for downloading files using Hydra.
 //
 // Basic usage:
 //

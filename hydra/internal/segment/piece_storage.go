@@ -99,7 +99,7 @@ func (ps *DefaultPieceStorage) GetMissingPieceIndex(startIndex int) int {
 // CalculateOptimalPieceLength calculates a reasonable piece size
 // based on the total file size.
 //
-// Strategy similar to aria2:
+// Strategy:
 // < 50MiB: 1MiB
 // < 250MiB: 2MiB
 // < 500MiB: 4MiB

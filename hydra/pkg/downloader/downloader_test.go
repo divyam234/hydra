@@ -62,14 +62,14 @@ func setupTestServer(t *testing.T, content []byte) *httptest.Server {
 
 func TestDownload(t *testing.T) {
 	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "aria2go_test")
+	tmpDir, err := os.MkdirTemp("", "hydra_test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	// Create dummy content
-	content := []byte("Hello, aria2go!")
+	content := []byte("Hello, Hydra!")
 	server := setupTestServer(t, content)
 	defer server.Close()
 
@@ -108,7 +108,7 @@ func TestDownload(t *testing.T) {
 }
 
 func TestDownload_ContextCancellation(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_cancel_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_cancel_test")
 	defer os.RemoveAll(tmpDir)
 
 	// Large content to ensure we can catch it in progress
@@ -132,7 +132,7 @@ func TestDownload_ContextCancellation(t *testing.T) {
 }
 
 func TestEngine_Lifecycle(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_engine_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_engine_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := []byte("Engine test content")
@@ -176,7 +176,7 @@ func TestEngine_Lifecycle(t *testing.T) {
 }
 
 func TestEngine_Callbacks(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_callback_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_callback_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*100) // 100KB
@@ -248,7 +248,7 @@ func TestEngine_Status_NotFound(t *testing.T) {
 }
 
 func TestDownload_WithChecksum(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_checksum_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_checksum_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := []byte("Hello, checksum test!")
@@ -271,7 +271,7 @@ func TestDownload_WithChecksum(t *testing.T) {
 }
 
 func TestEngine_PerDownloadCallbacks(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_perdownload_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_perdownload_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*100) // 100KB
@@ -354,7 +354,7 @@ func TestEngine_PerDownloadCallbacks(t *testing.T) {
 }
 
 func TestEngine_SetMessageCallback(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_msgcb_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_msgcb_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := []byte("Message callback test")
@@ -387,7 +387,7 @@ func TestEngine_SetMessageCallback(t *testing.T) {
 }
 
 func TestEngine_ConcurrentDownloads(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_concurrent_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_concurrent_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := []byte("Concurrent download content")
@@ -440,7 +440,7 @@ func TestEngine_ConcurrentDownloads(t *testing.T) {
 }
 
 func TestWithHeader_VerifyHeaders(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_header_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_header_test")
 	defer os.RemoveAll(tmpDir)
 
 	receivedHeaders := make(map[string]string)
@@ -490,7 +490,7 @@ func TestWithHeader_VerifyHeaders(t *testing.T) {
 }
 
 func TestProgress_HasDownloadID(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_progress_id_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_progress_id_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*100) // 100KB
@@ -533,7 +533,7 @@ func TestProgress_HasDownloadID(t *testing.T) {
 }
 
 func TestEngine_Cancel(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_cancel_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_cancel_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*1024) // 1MB
@@ -575,7 +575,7 @@ func TestEngine_Cancel(t *testing.T) {
 }
 
 func TestEngine_PauseResume(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_pause_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_pause_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*200) // 200KB
@@ -657,7 +657,7 @@ func TestEngine_PauseNotActive(t *testing.T) {
 }
 
 func TestEngine_MaxConcurrentDownloads(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_maxconcurrent_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_maxconcurrent_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*200) // 200KB - larger to ensure queue behavior
@@ -715,7 +715,7 @@ func TestEngine_MaxConcurrentDownloads(t *testing.T) {
 }
 
 func TestEngine_EventCallbacks(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_events_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_events_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := []byte("Event callback test content")
@@ -788,7 +788,7 @@ func TestEngine_EventCallbacks(t *testing.T) {
 }
 
 func TestEngine_EventOnCancel(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_cancel_event_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_cancel_event_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*500) // 500KB
@@ -848,7 +848,7 @@ func TestEngine_EventOnCancel(t *testing.T) {
 }
 
 func TestEngine_EventOnPauseResume(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_pauseresume_event_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_pauseresume_event_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*100) // 100KB
@@ -914,7 +914,7 @@ func TestEngine_EventOnPauseResume(t *testing.T) {
 }
 
 func TestEngine_Priority(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_priority_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_priority_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*50) // 50KB
@@ -984,7 +984,7 @@ func TestEngine_Priority(t *testing.T) {
 }
 
 func TestEngine_SetMaxConcurrentDownloads(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_setmax_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_setmax_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*200) // 200KB - larger for longer downloads
@@ -1034,7 +1034,7 @@ func TestEngine_SetMaxConcurrentDownloads(t *testing.T) {
 }
 
 func TestEngine_SessionSaveLoad(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_session_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_session_test")
 	defer os.RemoveAll(tmpDir)
 
 	sessionFile := filepath.Join(tmpDir, "test_session.json")
@@ -1089,7 +1089,7 @@ func TestEventType_String(t *testing.T) {
 }
 
 func TestEngine_QueuePosition(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_queuepos_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_queuepos_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*200) // 200KB
@@ -1156,7 +1156,7 @@ func TestEngine_QueuePosition(t *testing.T) {
 }
 
 func TestEngine_EventWithProgress(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_eventprogress_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_eventprogress_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := make([]byte, 1024*100) // 100KB
@@ -1205,7 +1205,7 @@ func TestEngine_EventWithProgress(t *testing.T) {
 }
 
 func TestEngine_ErrorEventWithProgress(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_errorevent_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_errorevent_test")
 	defer os.RemoveAll(tmpDir)
 
 	content := []byte("Error event test")
@@ -1261,7 +1261,7 @@ func TestEngine_ErrorEventWithProgress(t *testing.T) {
 }
 
 func TestEngine_SessionMidDownload(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_session_mid_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_session_mid_test")
 	defer os.RemoveAll(tmpDir)
 
 	sessionFile := filepath.Join(tmpDir, "session.json")
@@ -1318,7 +1318,7 @@ func TestEngine_SessionMidDownload(t *testing.T) {
 }
 
 func TestEngine_SessionWithPendingDownloads(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_session_pending_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_session_pending_test")
 	defer os.RemoveAll(tmpDir)
 
 	sessionFile := filepath.Join(tmpDir, "session_pending.json")

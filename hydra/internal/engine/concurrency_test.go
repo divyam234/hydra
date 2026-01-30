@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 // Category 3: Concurrency & Race Conditions
@@ -26,7 +26,7 @@ func TestConcurrency_MultipleWorkers(t *testing.T) {
 	server := setupRangeServer(t, data) // Reusing helper from request_group_test.go (same package)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_conc_workers")
+	tmpDir, _ := os.MkdirTemp("", "hydra_conc_workers")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -52,7 +52,7 @@ func TestConcurrency_RapidCancelResume(t *testing.T) {
 	server := setupRangeServer(t, data)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_rapid")
+	tmpDir, _ := os.MkdirTemp("", "hydra_rapid")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -94,7 +94,7 @@ func TestConcurrency_ProgressCounter(t *testing.T) {
 	server := setupRangeServer(t, data)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_counter")
+	tmpDir, _ := os.MkdirTemp("", "hydra_counter")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()

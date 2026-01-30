@@ -1,4 +1,4 @@
-module github.com/bhunter/aria2go
+module github.com/bhunter/hydra
 
 go 1.25.6
 

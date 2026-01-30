@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 // Test HTTP server that supports Range requests
@@ -70,7 +70,7 @@ func TestRequestGroup_Execute_Success(t *testing.T) {
 	server := setupRangeServer(t, data)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_test")
+	tmpDir, _ := os.MkdirTemp("", "hydra_test")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -162,7 +162,7 @@ func TestRequestGroup_Resume_Logic(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_resume")
+	tmpDir, _ := os.MkdirTemp("", "hydra_resume")
 	defer os.RemoveAll(tmpDir)
 
 	out := "resume.dat"
@@ -192,7 +192,7 @@ func TestRequestGroup_Resume_Logic(t *testing.T) {
 	}
 
 	// Verify control file exists
-	if _, err := os.Stat(fullPath + ".aria2"); os.IsNotExist(err) {
+	if _, err := os.Stat(fullPath + ".hydra"); os.IsNotExist(err) {
 		t.Fatal("Control file not found after interruption")
 	}
 
@@ -234,7 +234,7 @@ func TestRequestGroup_Retry_On_Failure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_retry")
+	tmpDir, _ := os.MkdirTemp("", "hydra_retry")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -268,7 +268,7 @@ func TestRequestGroup_Fallback_To_Single(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_fallback")
+	tmpDir, _ := os.MkdirTemp("", "hydra_fallback")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()

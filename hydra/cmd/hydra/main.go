@@ -8,16 +8,15 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/bhunter/aria2go/pkg/downloader"
+	"github.com/bhunter/hydra/pkg/downloader"
 	"github.com/spf13/cobra"
 )
 
 var (
 	rootCmd = &cobra.Command{
-		Use:   "aria2go",
-		Short: "Aria2Go - Native Go HTTP Download Utility",
-		Long: `Aria2Go is a feature-rich, high-performance download utility 
-written in Go, inspired by aria2c.`,
+		Use:   "hydra",
+		Short: "Hydra - Multi-Connection Download Manager",
+		Long:  `Hydra is a high-performance, multi-connection download manager written in Go.`,
 	}
 
 	downloadCmd = &cobra.Command{

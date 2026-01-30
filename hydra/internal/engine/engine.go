@@ -6,8 +6,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/bhunter/aria2go/internal/ui"
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/internal/ui"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 // EventType represents the type of download event

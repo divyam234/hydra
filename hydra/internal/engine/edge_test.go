@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 // Category 5: Edge Cases
@@ -20,7 +20,7 @@ func TestEdge_ZeroLengthFile(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_zero")
+	tmpDir, _ := os.MkdirTemp("", "hydra_zero")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -55,7 +55,7 @@ func TestEdge_ExactPieceBoundary(t *testing.T) {
 	server := setupRangeServer(t, data)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_boundary")
+	tmpDir, _ := os.MkdirTemp("", "hydra_boundary")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -88,7 +88,7 @@ func TestEdge_LongFilename(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_long")
+	tmpDir, _ := os.MkdirTemp("", "hydra_long")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -114,7 +114,7 @@ func TestEdge_UnicodeFilename(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_unicode")
+	tmpDir, _ := os.MkdirTemp("", "hydra_unicode")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -140,7 +140,7 @@ func TestEdge_SingleByteFile(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_single")
+	tmpDir, _ := os.MkdirTemp("", "hydra_single")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()

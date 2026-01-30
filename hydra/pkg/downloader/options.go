@@ -3,7 +3,7 @@ package downloader
 import (
 	"fmt"
 
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 // config holds the configuration for a download

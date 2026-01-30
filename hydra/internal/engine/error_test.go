@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 // Category 4: Error Handling
@@ -35,7 +35,7 @@ func TestError_NoURIs(t *testing.T) {
 
 func TestError_PermissionDenied(t *testing.T) {
 	// Create a read-only directory
-	tmpDir, _ := os.MkdirTemp("", "aria2go_perm")
+	tmpDir, _ := os.MkdirTemp("", "hydra_perm")
 	defer os.RemoveAll(tmpDir)
 	os.Chmod(tmpDir, 0500) // Read-execute only, no write
 

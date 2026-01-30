@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 // Helper to create a standard range server
@@ -96,7 +96,7 @@ func TestResume_CorruptedControlFile(t *testing.T) {
 	server := setupResumeTestServer(t, data)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_corrupt")
+	tmpDir, _ := os.MkdirTemp("", "hydra_corrupt")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -104,7 +104,7 @@ func TestResume_CorruptedControlFile(t *testing.T) {
 	opt.Put(option.Out, "file.dat")
 
 	// Create a corrupted control file
-	controlPath := filepath.Join(tmpDir, "file.dat.aria2")
+	controlPath := filepath.Join(tmpDir, "file.dat.hydra")
 	os.WriteFile(controlPath, []byte("NOT JSON DATA"), 0644)
 
 	rg := NewRequestGroup("corrupt-gid", []string{server.URL}, opt)
@@ -120,7 +120,7 @@ func TestResume_CorruptedControlFile(t *testing.T) {
 }
 
 func TestResume_MismatchedSize(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "aria2go_size_change")
+	tmpDir, _ := os.MkdirTemp("", "hydra_size_change")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -181,7 +181,7 @@ func TestResume_MismatchedSize(t *testing.T) {
 	rg1.Execute(ctx)
 
 	// Verify control file matches 100 bytes
-	if _, err := os.Stat(filepath.Join(tmpDir, "change.dat.aria2")); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(tmpDir, "change.dat.hydra")); os.IsNotExist(err) {
 		t.Fatal("Control file missing")
 	}
 
@@ -206,7 +206,7 @@ func TestResume_FileDeleted(t *testing.T) {
 	server := setupThrottledServer(t, data)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_deleted")
+	tmpDir, _ := os.MkdirTemp("", "hydra_deleted")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -224,7 +224,7 @@ func TestResume_FileDeleted(t *testing.T) {
 	rg1.Execute(ctx)
 
 	// Verify control file exists
-	if _, err := os.Stat(filepath.Join(tmpDir, "del.dat.aria2")); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(tmpDir, "del.dat.hydra")); os.IsNotExist(err) {
 		t.Fatal("Setup failed: no control file")
 	}
 
@@ -249,7 +249,7 @@ func TestResume_CompleteFile(t *testing.T) {
 	server := setupResumeTestServer(t, data)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_complete")
+	tmpDir, _ := os.MkdirTemp("", "hydra_complete")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -271,9 +271,9 @@ func TestResume_CompleteFile(t *testing.T) {
 func TestResume_ServerNoLongerSupportsRange(t *testing.T) {
 	// Scenario: Download starts with Range support, gets interrupted.
 	// On resume, server no longer supports Range (returns 200 OK for Range request).
-	// Aria2go should fall back to single connection and restart download (or overwrite).
+	// Hydra should fall back to single connection and restart download (or overwrite).
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_no_range")
+	tmpDir, _ := os.MkdirTemp("", "hydra_no_range")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -343,7 +343,7 @@ func TestResume_BitfieldCorruption(t *testing.T) {
 	server := setupResumeTestServer(t, data)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_bad_bitfield")
+	tmpDir, _ := os.MkdirTemp("", "hydra_bad_bitfield")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -369,7 +369,7 @@ func TestResume_BitfieldCorruption(t *testing.T) {
 	}`
 	// ZZZZ is not valid hex
 
-	os.WriteFile(filepath.Join(tmpDir, "file.dat.aria2"), []byte(jsonContent), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "file.dat.hydra"), []byte(jsonContent), 0644)
 
 	rg := NewRequestGroup("gid-bad", []string{server.URL}, opt)
 	err := rg.Execute(context.Background())

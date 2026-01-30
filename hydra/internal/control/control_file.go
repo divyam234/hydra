@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/bhunter/aria2go/internal/segment"
+	"github.com/bhunter/hydra/internal/segment"
 )
 
 // ControlFile represents the state of a download
@@ -29,7 +29,7 @@ type Controller struct {
 // NewController creates a new Controller
 func NewController(downloadPath string) *Controller {
 	return &Controller{
-		filePath: downloadPath + ".aria2",
+		filePath: downloadPath + ".hydra",
 	}
 }
 

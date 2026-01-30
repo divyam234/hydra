@@ -1,6 +1,6 @@
 package option
 
-// Preference constants mapped to aria2 option names
+// Preference constants for Hydra download options
 const (
 	// Connection Options
 	Timeout             = "timeout"
@@ -49,14 +49,6 @@ const (
 	AutoFileRenaming        = "auto-file-renaming"
 	AllowOverwrite          = "allow-overwrite"
 
-	// RPC Options
-	EnableRpc         = "enable-rpc"
-	RpcListenPort     = "rpc-listen-port"
-	RpcListenAll      = "rpc-listen-all"
-	RpcSecret         = "rpc-secret"
-	RpcMaxRequestSize = "rpc-max-request-size"
-	RpcAllowOriginAll = "rpc-allow-origin-all"
-
 	// Session Options
 	InputFile           = "input-file"
 	SaveSession         = "save-session"
@@ -83,7 +75,7 @@ const (
 	DefaultSplit                  = "5"
 	DefaultMinSplitSize           = "20M"
 	DefaultMaxPiecesPerSegment    = "20"
-	DefaultUserAgent              = "aria2go/0.1.0"
+	DefaultUserAgent              = "hydra/0.1.0"
 	DefaultEnableHttpKeepAlive    = "true"
 	DefaultEnableHttpPipelining   = "false"
 	DefaultHttpNoCache            = "false"
@@ -93,8 +85,6 @@ const (
 	DefaultContinue               = "false"
 	DefaultAutoFileRenaming       = "true"
 	DefaultAllowOverwrite         = "false"
-	DefaultRpcListenPort          = "6800"
-	DefaultRpcMaxRequestSize      = "2M"
 )
 
 // GetDefaultOptions returns a new Option populated with default values
@@ -118,7 +108,5 @@ func GetDefaultOptions() *Option {
 	opt.Put(Continue, DefaultContinue)
 	opt.Put(AutoFileRenaming, DefaultAutoFileRenaming)
 	opt.Put(AllowOverwrite, DefaultAllowOverwrite)
-	opt.Put(RpcListenPort, DefaultRpcListenPort)
-	opt.Put(RpcMaxRequestSize, DefaultRpcMaxRequestSize)
 	return opt
 }

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 // Category 1: Network Conditions
@@ -33,7 +33,7 @@ func TestDownload_SlowServer(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_slow")
+	tmpDir, _ := os.MkdirTemp("", "hydra_slow")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -71,7 +71,7 @@ func TestDownload_ConnectionReset(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_reset")
+	tmpDir, _ := os.MkdirTemp("", "hydra_reset")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -117,7 +117,7 @@ func TestDownload_Redirect_301(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_redirect")
+	tmpDir, _ := os.MkdirTemp("", "hydra_redirect")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -145,7 +145,7 @@ func TestDownload_ContentLength_Mismatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_mismatch")
+	tmpDir, _ := os.MkdirTemp("", "hydra_mismatch")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -215,7 +215,7 @@ func TestDownload_PartialContent_Mismatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_partial_mismatch")
+	tmpDir, _ := os.MkdirTemp("", "hydra_partial_mismatch")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -267,7 +267,7 @@ func TestDownload_Redirect_Chain(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_chain")
+	tmpDir, _ := os.MkdirTemp("", "hydra_chain")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()

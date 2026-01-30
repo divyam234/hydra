@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 // NewClient creates a new HTTP client with custom transport

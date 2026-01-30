@@ -11,7 +11,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 func TestChecksum_Validation(t *testing.T) {
@@ -45,7 +45,7 @@ func TestChecksum_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tmpDir, _ := os.MkdirTemp("", "aria2go_checksum")
+			tmpDir, _ := os.MkdirTemp("", "hydra_checksum")
 			defer os.RemoveAll(tmpDir)
 
 			opt := option.GetDefaultOptions()

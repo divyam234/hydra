@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 func TestOption_RateLimiting(t *testing.T) {
@@ -24,7 +24,7 @@ func TestOption_RateLimiting(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_limit")
+	tmpDir, _ := os.MkdirTemp("", "hydra_limit")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -56,7 +56,7 @@ func TestOption_CustomHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_headers")
+	tmpDir, _ := os.MkdirTemp("", "hydra_headers")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -80,7 +80,7 @@ func TestOption_UserAgent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_ua")
+	tmpDir, _ := os.MkdirTemp("", "hydra_ua")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -121,7 +121,7 @@ func TestOption_LowestSpeedLimit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_lowspeed")
+	tmpDir, _ := os.MkdirTemp("", "hydra_lowspeed")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -148,7 +148,7 @@ func TestOption_Timeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_timeout")
+	tmpDir, _ := os.MkdirTemp("", "hydra_timeout")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -179,7 +179,7 @@ func TestOption_BasicAuth(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_auth")
+	tmpDir, _ := os.MkdirTemp("", "hydra_auth")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()
@@ -204,7 +204,7 @@ func TestOption_Cookies(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_cookies")
+	tmpDir, _ := os.MkdirTemp("", "hydra_cookies")
 	defer os.RemoveAll(tmpDir)
 
 	cookieFile := filepath.Join(tmpDir, "cookies.txt")
@@ -240,7 +240,7 @@ func TestOption_Proxy(t *testing.T) {
 	}))
 	defer target.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aria2go_proxy")
+	tmpDir, _ := os.MkdirTemp("", "hydra_proxy")
 	defer os.RemoveAll(tmpDir)
 
 	opt := option.GetDefaultOptions()

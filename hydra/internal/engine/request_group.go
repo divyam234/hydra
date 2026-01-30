@@ -12,15 +12,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bhunter/aria2go/internal/control"
-	"github.com/bhunter/aria2go/internal/disk"
-	internalhttp "github.com/bhunter/aria2go/internal/http"
-	"github.com/bhunter/aria2go/internal/limit"
-	"github.com/bhunter/aria2go/internal/segment"
-	"github.com/bhunter/aria2go/internal/stats"
-	"github.com/bhunter/aria2go/internal/ui"
-	"github.com/bhunter/aria2go/internal/util"
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/hydra/internal/control"
+	"github.com/bhunter/hydra/internal/disk"
+	internalhttp "github.com/bhunter/hydra/internal/http"
+	"github.com/bhunter/hydra/internal/limit"
+	"github.com/bhunter/hydra/internal/segment"
+	"github.com/bhunter/hydra/internal/stats"
+	"github.com/bhunter/hydra/internal/ui"
+	"github.com/bhunter/hydra/internal/util"
+	"github.com/bhunter/hydra/pkg/option"
 )
 
 // RequestGroup represents a single download task
