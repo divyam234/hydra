@@ -8,8 +8,8 @@ import argparse
 import statistics
 
 # Default high-speed test files (User can override these)
-DEFAULT_URL_1GB = "https://proof.ovh.net/files/1Gb.dat"
-DEFAULT_URL_5GB = "http://speedtest.tele2.net/5GB.zip"
+DEFAULT_URL_1GB = "https://speedtest.wtnet.de/files/1000mb.bin"
+DEFAULT_URL_5GB = "https://speedtest.wtnet.de/files/5000mb.bin"
 
 COLORS = {
     "HEADER": "\033[95m",
