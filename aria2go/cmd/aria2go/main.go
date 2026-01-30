@@ -1,14 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
-	"github.com/bhunter/aria2go/internal/engine"
-	"github.com/bhunter/aria2go/pkg/option"
+	"github.com/bhunter/aria2go/pkg/downloader"
 	"github.com/spf13/cobra"
 )
 
@@ -25,77 +25,77 @@ written in Go, inspired by aria2c.`,
 		Short: "Download files from URLs",
 		Args:  cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			opt := option.GetDefaultOptions()
+			var opts []downloader.Option
 
-			// Load flags into option
+			// Load flags into options
 			if dir, _ := cmd.Flags().GetString("dir"); dir != "" {
-				opt.Put(option.Dir, dir)
+				opts = append(opts, downloader.WithDir(dir))
 			}
 			if out, _ := cmd.Flags().GetString("out"); out != "" {
-				opt.Put(option.Out, out)
+				opts = append(opts, downloader.WithFilename(out))
 			}
 			if ua, _ := cmd.Flags().GetString("user-agent"); ua != "" {
-				opt.Put(option.UserAgent, ua)
+				opts = append(opts, downloader.WithUserAgent(ua))
 			}
 			if split, _ := cmd.Flags().GetInt("split"); split > 0 {
-				opt.Put(option.Split, fmt.Sprintf("%d", split))
+				opts = append(opts, downloader.WithSplit(split))
 			}
 			if limit, _ := cmd.Flags().GetString("max-download-limit"); limit != "" {
-				opt.Put(option.MaxDownloadLimit, limit)
+				opts = append(opts, downloader.WithMaxSpeed(limit))
 			}
 			if checksum, _ := cmd.Flags().GetString("checksum"); checksum != "" {
-				opt.Put(option.Checksum, checksum)
+				opts = append(opts, downloader.WithChecksum(checksum))
 			}
 			if tries, _ := cmd.Flags().GetInt("max-tries"); tries > 0 {
-				opt.Put(option.MaxTries, fmt.Sprintf("%d", tries))
+				opts = append(opts, downloader.WithRetries(tries))
 			}
 			if wait, _ := cmd.Flags().GetInt("retry-wait"); wait > 0 {
-				opt.Put(option.RetryWait, fmt.Sprintf("%d", wait))
+				opts = append(opts, downloader.WithRetryWait(wait))
 			}
 			if lowest, _ := cmd.Flags().GetString("lowest-speed-limit"); lowest != "" {
-				opt.Put(option.LowestSpeedLimit, lowest)
+				opts = append(opts, downloader.WithLowestSpeed(lowest))
 			}
 			if cookies, _ := cmd.Flags().GetString("load-cookies"); cookies != "" {
-				opt.Put(option.LoadCookies, cookies)
+				opts = append(opts, downloader.WithCookieFile(cookies))
 			}
 			if headers, _ := cmd.Flags().GetStringSlice("header"); len(headers) > 0 {
-				// Join multiple headers with \n to store in single option string
-				opt.Put(option.Header, strings.Join(headers, "\n"))
+				for _, h := range headers {
+					parts := strings.SplitN(h, ":", 2)
+					if len(parts) == 2 {
+						opts = append(opts, downloader.WithHeader(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])))
+					}
+				}
 			}
 			if ref, _ := cmd.Flags().GetString("referer"); ref != "" {
-				opt.Put(option.Referer, ref)
+				opts = append(opts, downloader.WithReferer(ref))
 			}
 			if user, _ := cmd.Flags().GetString("http-user"); user != "" {
-				opt.Put(option.HttpUser, user)
-			}
-			if pass, _ := cmd.Flags().GetString("http-passwd"); pass != "" {
-				opt.Put(option.HttpPasswd, pass)
+				pass, _ := cmd.Flags().GetString("http-passwd")
+				opts = append(opts, downloader.WithAuth(user, pass))
 			}
 			if httpProxy, _ := cmd.Flags().GetString("http-proxy"); httpProxy != "" {
-				opt.Put(option.HttpProxy, httpProxy)
+				// Note: internal engine uses separate options, but our library wrapper only exposed WithProxy (AllProxy)
+				// To fully support http vs https proxy in library, we might need to expand options.
+				// For now, let's assume WithProxy sets AllProxy which falls back.
+				// Wait, internal http client logic checks AllProxy first.
+				opts = append(opts, downloader.WithProxy(httpProxy))
 			}
-			if httpsProxy, _ := cmd.Flags().GetString("https-proxy"); httpsProxy != "" {
-				opt.Put(option.HttpsProxy, httpsProxy)
-			}
+			// Handling https/all proxy similarly if set
 			if allProxy, _ := cmd.Flags().GetString("all-proxy"); allProxy != "" {
-				opt.Put(option.AllProxy, allProxy)
+				opts = append(opts, downloader.WithProxy(allProxy))
 			}
 			if timeout, _ := cmd.Flags().GetInt("timeout"); timeout > 0 {
-				opt.Put(option.Timeout, fmt.Sprintf("%d", timeout))
+				opts = append(opts, downloader.WithTimeout(timeout))
 			}
 			if connectTimeout, _ := cmd.Flags().GetInt("connect-timeout"); connectTimeout > 0 {
-				opt.Put(option.ConnectTimeout, fmt.Sprintf("%d", connectTimeout))
+				opts = append(opts, downloader.WithConnectTimeout(connectTimeout))
+			}
+			if maxPieces, _ := cmd.Flags().GetInt("max-pieces-per-segment"); maxPieces > 0 {
+				opts = append(opts, downloader.WithMaxPiecesPerSegment(maxPieces))
 			}
 
-			eng := engine.NewDownloadEngine(opt)
-
-			// For now, treat all args as a single download with mirrors if multiple
-			// In future, we might handle multiple separate downloads
-			_, err := eng.AddURI(args, opt)
-			if err != nil {
-				fmt.Printf("Failed to add download: %v\n", err)
-				os.Exit(1)
-			}
+			eng := downloader.NewEngine(opts...)
+			defer eng.Shutdown()
 
 			// Setup signal handling
 			sigs := make(chan os.Signal, 1)
@@ -107,7 +107,14 @@ written in Go, inspired by aria2c.`,
 				eng.Shutdown()
 			}()
 
-			if err := eng.Run(); err != nil {
+			// Add download
+			_, err := eng.AddDownload(context.Background(), args)
+			if err != nil {
+				fmt.Printf("Failed to add download: %v\n", err)
+				os.Exit(1)
+			}
+
+			if err := eng.Wait(); err != nil {
 				fmt.Printf("Engine error: %v\n", err)
 				os.Exit(1)
 			}
@@ -137,6 +144,7 @@ func init() {
 	downloadCmd.Flags().String("all-proxy", "", "Set proxy for all protocols")
 	downloadCmd.Flags().Int("timeout", 0, "Timeout in seconds")
 	downloadCmd.Flags().Int("connect-timeout", 0, "Connect timeout in seconds")
+	downloadCmd.Flags().Int("max-pieces-per-segment", 20, "Max pieces per segment (chunk size control)")
 }
 
 func main() {

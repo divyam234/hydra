@@ -74,7 +74,7 @@ func TestBitfieldMan_DeadlockPrevention(t *testing.T) {
 // 2. SegmentMan Concurrency and Race Tests
 func TestSegmentMan_ConcurrentAllocation(t *testing.T) {
 	ps := newMockPieceStorage(1000, 1024)
-	sm := NewSegmentMan(ps)
+	sm := NewSegmentMan(ps, 20)
 	var wg sync.WaitGroup
 	workers := 10
 	allocated := make(chan *Segment, 1000)
@@ -146,7 +146,7 @@ func TestCalculateOptimalPieceLength(t *testing.T) {
 // 4. Segment Recovery Scenario
 func TestSegmentMan_RetryAndRecovery(t *testing.T) {
 	ps := newMockPieceStorage(10, 1024)
-	sm := NewSegmentMan(ps)
+	sm := NewSegmentMan(ps, 20)
 
 	// Worker 1 gets segment
 	seg := sm.GetSegment()

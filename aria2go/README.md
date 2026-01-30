@@ -30,6 +30,8 @@ go build -o aria2go cmd/aria2go/main.go
 
 ## Usage
 
+### CLI Usage
+
 Basic download:
 ```bash
 ./aria2go download "https://example.com/file.zip"
@@ -55,6 +57,48 @@ Load cookies for authenticated downloads:
 ./aria2go download "https://example.com/protected.zip" --load-cookies cookies.txt
 ```
 
+### Library Usage
+
+You can use aria2go as a library in your Go programs.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/bhunter/aria2go/pkg/downloader"
+)
+
+func main() {
+    // Simple one-liner
+    result, err := downloader.Download(context.Background(), 
+        "https://example.com/file.zip",
+        downloader.WithDir("/tmp"),
+        downloader.WithSplit(8),
+    )
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Downloaded %s (%d bytes) in %v\n", 
+        result.Filename, result.TotalBytes, result.Duration)
+    
+    // Advanced usage with Engine
+    eng := downloader.NewEngine(
+        downloader.WithMaxSpeed("10M"),
+        downloader.WithMessageCallback(func(msg string) {
+            fmt.Printf("[Log] %s\n", msg)
+        }),
+    )
+    defer eng.Shutdown()
+    
+    id, _ := eng.AddDownload(context.Background(), []string{"https://example.com/file.zip"})
+    eng.Wait()
+}
+```
+
+See `pkg/downloader` documentation for more details.
+
 ## Options
 
 | Option | Description | Default |
@@ -69,6 +113,7 @@ Load cookies for authenticated downloads:
 | `--load-cookies` | Load cookies from Netscape/Mozilla format file | None |
 | `--timeout` | Timeout in seconds | 60 |
 | `--connect-timeout` | Connect timeout in seconds | 15 |
+| `--max-pieces-per-segment` | Max pieces per segment (chunk size control) | 20 |
 | `--http-proxy` | HTTP proxy URL | Env |
 | `--https-proxy` | HTTPS proxy URL | Env |
 | `--all-proxy` | Proxy for all protocols | Env |

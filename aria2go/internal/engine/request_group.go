@@ -35,27 +35,132 @@ type RequestGroup struct {
 	httpClient         *http.Client
 	limiter            *limit.BandwidthLimiter
 	speedCalc          *stats.SpeedCalc
-	console            *ui.Console
+	console            ui.UserInterface
 	totalLength        int64
 	completedBytes     atomic.Int64
 	outputPath         string
 	workers            int
 	speedCheckInterval time.Duration // For testing
+
+	// State tracking
+	startTime        time.Time
+	endTime          time.Time
+	state            atomic.Int32 // RGState* constants
+	lastError        error
+	checksumOK       bool
+	checksumVerified bool
+	stateMu          sync.RWMutex // protects lastError, checksumOK, checksumVerified
+
+	// Pause/Resume/Cancel control
+	pauseCh    chan struct{}
+	resumeCh   chan struct{}
+	cancelCh   chan struct{}
+	cancelOnce sync.Once
+
+	// Queue management
+	priority int // Higher priority downloads run first
 }
 
 // NewRequestGroup creates a new RequestGroup
 func NewRequestGroup(gid GID, uris []string, opt *option.Option) *RequestGroup {
-	return &RequestGroup{
+	rg := &RequestGroup{
 		gid:                gid,
 		uris:               uris,
 		options:            opt,
 		diskAdaptor:        disk.NewDirectDiskAdaptor(),
 		speedCheckInterval: 30 * time.Second,
+		pauseCh:            make(chan struct{}),
+		resumeCh:           make(chan struct{}),
+		cancelCh:           make(chan struct{}),
 	}
+	rg.state.Store(RGStatePending)
+	return rg
+}
+
+// Pause pauses the download
+func (rg *RequestGroup) Pause() bool {
+	currentState := rg.state.Load()
+	if currentState != RGStateActive {
+		return false
+	}
+	if rg.state.CompareAndSwap(RGStateActive, RGStatePaused) {
+		select {
+		case rg.pauseCh <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	return false
+}
+
+// Resume resumes a paused download
+func (rg *RequestGroup) Resume() bool {
+	currentState := rg.state.Load()
+	if currentState != RGStatePaused {
+		return false
+	}
+	if rg.state.CompareAndSwap(RGStatePaused, RGStateActive) {
+		select {
+		case rg.resumeCh <- struct{}{}:
+		default:
+		}
+		return true
+	}
+	return false
+}
+
+// Cancel cancels the download
+func (rg *RequestGroup) Cancel() bool {
+	currentState := rg.state.Load()
+	if currentState == RGStateComplete || currentState == RGStateCancelled || currentState == RGStateError {
+		return false
+	}
+
+	rg.cancelOnce.Do(func() {
+		rg.state.Store(RGStateCancelled)
+		close(rg.cancelCh)
+	})
+	return true
+}
+
+// IsPaused returns true if the download is paused
+func (rg *RequestGroup) IsPaused() bool {
+	return rg.state.Load() == RGStatePaused
+}
+
+// IsCancelled returns true if the download is cancelled
+func (rg *RequestGroup) IsCancelled() bool {
+	return rg.state.Load() == RGStateCancelled
+}
+
+// SetUI sets the user interface
+func (rg *RequestGroup) SetUI(u ui.UserInterface) {
+	rg.console = u
 }
 
 // Execute starts the download
-func (rg *RequestGroup) Execute(ctx context.Context) error {
+func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
+	rg.stateMu.Lock()
+	rg.startTime = time.Now()
+	rg.state.Store(RGStateActive)
+	rg.stateMu.Unlock()
+
+	defer func() {
+		rg.stateMu.Lock()
+		rg.endTime = time.Now()
+		currentState := rg.state.Load()
+		// Don't override cancelled state
+		if currentState == RGStateCancelled {
+			rg.lastError = fmt.Errorf("download cancelled")
+		} else if err != nil {
+			rg.state.Store(RGStateError)
+			rg.lastError = err
+		} else {
+			rg.state.Store(RGStateComplete)
+		}
+		rg.stateMu.Unlock()
+	}()
+
 	if len(rg.uris) == 0 {
 		return fmt.Errorf("no URIs provided")
 	}
@@ -91,7 +196,9 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 
 	// Initialize Stats
 	rg.speedCalc = stats.NewSpeedCalc()
-	rg.console = ui.NewConsole()
+	if rg.console == nil {
+		rg.console = ui.NewConsole()
+	}
 
 	// 2. Initialize Controller and check for resume
 	rg.controller = control.NewController(rg.outputPath)
@@ -166,7 +273,8 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 
 	// Initialize storage
 	rg.pieceStorage = segment.NewDefaultPieceStorage(rg.totalLength, pieceLength)
-	rg.segmentMan = segment.NewSegmentMan(rg.pieceStorage)
+	maxPieces, _ := rg.options.GetAsInt(option.MaxPiecesPerSegment)
+	rg.segmentMan = segment.NewSegmentMan(rg.pieceStorage, maxPieces)
 
 	// Restore bitfield if resumed
 	if resumed {
@@ -239,6 +347,21 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 
 	for {
 		select {
+		case <-rg.cancelCh:
+			// Download was cancelled
+			rg.saveControlFile()
+			return fmt.Errorf("download cancelled")
+		case <-rg.pauseCh:
+			// Download was paused, wait for resume or cancel
+			rg.saveControlFile()
+			select {
+			case <-rg.resumeCh:
+				// Resumed, continue
+			case <-rg.cancelCh:
+				return fmt.Errorf("download cancelled")
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		case <-ctx.Done():
 			// Don't save if it was a cancellation during initialization?
 			// Actually we want to save what we have.
@@ -252,6 +375,10 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 		case <-ticker.C:
 			rg.saveControlFile()
 		case <-statsTicker.C:
+			// Skip stats if paused
+			if rg.IsPaused() {
+				continue
+			}
 			// Print stats
 			speed := rg.speedCalc.GetSpeed()
 
@@ -291,8 +418,15 @@ func (rg *RequestGroup) verifyChecksum() error {
 	if checksum := rg.options.Get(option.Checksum); checksum != "" {
 		fmt.Printf("Verifying checksum %s...\n", checksum)
 		valid, err := util.VerifyChecksum(rg.outputPath, checksum)
+
+		rg.stateMu.Lock()
+		rg.checksumOK = valid
+		rg.checksumVerified = true
+		rg.stateMu.Unlock()
+
 		if err != nil {
 			fmt.Printf("Checksum verification failed: %v\n", err)
+			return fmt.Errorf("checksum verification error: %w", err)
 		} else if valid {
 			fmt.Println("Checksum OK")
 		} else {
@@ -301,6 +435,31 @@ func (rg *RequestGroup) verifyChecksum() error {
 		}
 	}
 	return nil
+}
+
+// GetFullStatus returns the full status of the download
+func (rg *RequestGroup) GetFullStatus() *DownloadStatus {
+	rg.stateMu.RLock()
+	defer rg.stateMu.RUnlock()
+
+	speed := 0
+	if rg.speedCalc != nil {
+		speed = rg.speedCalc.GetSpeed()
+	}
+
+	return &DownloadStatus{
+		GID:              rg.gid,
+		Total:            rg.totalLength,
+		Completed:        rg.completedBytes.Load(),
+		Speed:            speed,
+		State:            rg.state.Load(),
+		OutputPath:       rg.outputPath,
+		StartTime:        rg.startTime,
+		EndTime:          rg.endTime,
+		ChecksumOK:       rg.checksumOK,
+		ChecksumVerified: rg.checksumVerified,
+		Error:            rg.lastError,
+	}
 }
 
 // enrichRequest adds headers and authentication to the request
@@ -352,6 +511,27 @@ func (rg *RequestGroup) downloadWorker(ctx context.Context, id int, uriStr strin
 	}
 
 	for {
+		// Check for cancel
+		select {
+		case <-rg.cancelCh:
+			return fmt.Errorf("download cancelled")
+		default:
+		}
+
+		// Wait if paused
+		for rg.IsPaused() {
+			select {
+			case <-rg.resumeCh:
+				// Resumed
+			case <-rg.cancelCh:
+				return fmt.Errorf("download cancelled")
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+				// Check again
+			}
+		}
+
 		// Get next segment
 		seg := rg.segmentMan.GetSegment()
 		if seg == nil {
@@ -364,6 +544,9 @@ func (rg *RequestGroup) downloadWorker(ctx context.Context, id int, uriStr strin
 		for try := 0; try < maxTries; try++ {
 			// Check context before retry
 			select {
+			case <-rg.cancelCh:
+				rg.segmentMan.CancelSegment(seg.Index)
+				return fmt.Errorf("download cancelled")
 			case <-ctx.Done():
 				rg.segmentMan.CancelSegment(seg.Index)
 				return ctx.Err()

@@ -3,15 +3,16 @@ package option
 // Preference constants mapped to aria2 option names
 const (
 	// Connection Options
-	Timeout          = "timeout"
-	ConnectTimeout   = "connect-timeout"
-	MaxTries         = "max-tries"
-	RetryWait        = "retry-wait"
-	MaxConnPerServer = "max-connection-per-server"
-	Split            = "split"
-	MinSplitSize     = "min-split-size"
-	LowestSpeedLimit = "lowest-speed-limit"
-	MaxFileNotFound  = "max-file-not-found"
+	Timeout             = "timeout"
+	ConnectTimeout      = "connect-timeout"
+	MaxTries            = "max-tries"
+	RetryWait           = "retry-wait"
+	MaxConnPerServer    = "max-connection-per-server"
+	Split               = "split"
+	MinSplitSize        = "min-split-size"
+	MaxPiecesPerSegment = "max-pieces-per-segment"
+	LowestSpeedLimit    = "lowest-speed-limit"
+	MaxFileNotFound     = "max-file-not-found"
 
 	// HTTP Options
 	UserAgent            = "user-agent"
@@ -81,6 +82,7 @@ const (
 	DefaultMaxConnPerServer       = "1"
 	DefaultSplit                  = "5"
 	DefaultMinSplitSize           = "20M"
+	DefaultMaxPiecesPerSegment    = "20"
 	DefaultUserAgent              = "aria2go/0.1.0"
 	DefaultEnableHttpKeepAlive    = "true"
 	DefaultEnableHttpPipelining   = "false"
@@ -105,6 +107,7 @@ func GetDefaultOptions() *Option {
 	opt.Put(MaxConnPerServer, DefaultMaxConnPerServer)
 	opt.Put(Split, DefaultSplit)
 	opt.Put(MinSplitSize, DefaultMinSplitSize)
+	opt.Put(MaxPiecesPerSegment, DefaultMaxPiecesPerSegment)
 	opt.Put(UserAgent, DefaultUserAgent)
 	opt.Put(EnableHttpKeepAlive, DefaultEnableHttpKeepAlive)
 	opt.Put(EnableHttpPipelining, DefaultEnableHttpPipelining)

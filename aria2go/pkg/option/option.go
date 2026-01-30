@@ -94,6 +94,28 @@ func (o *Option) Clone() *Option {
 	return newOpt
 }
 
+// ToMap returns a copy of the internal values map
+func (o *Option) ToMap() map[string]string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	result := make(map[string]string, len(o.values))
+	for k, v := range o.values {
+		result[k] = v
+	}
+	return result
+}
+
+// FromMap populates the Option from a map
+func (o *Option) FromMap(m map[string]string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	for k, v := range m {
+		o.values[k] = v
+	}
+}
+
 // ParseUnitNumber parses strings like "10M", "1k" into bytes
 func ParseUnitNumber(s string) (int64, error) {
 	s = strings.TrimSpace(s)

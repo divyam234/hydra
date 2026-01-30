@@ -44,6 +44,13 @@ func (c *Console) ClearLine() {
 	fmt.Print("\r" + strings.Repeat(" ", 80) + "\r")
 }
 
+// Printf prints a formatted string
+func (c *Console) Printf(format string, a ...interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fmt.Printf(format, a...)
+}
+
 func formatSize(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {

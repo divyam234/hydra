@@ -37,7 +37,7 @@ func newMockPieceStorage(num int, length int64) *mockPieceStorage {
 
 func TestSegmentMan_GetSegment(t *testing.T) {
 	ps := newMockPieceStorage(100, 1024)
-	sm := NewSegmentMan(ps)
+	sm := NewSegmentMan(ps, 20)
 
 	// Get first segment
 	seg1 := sm.GetSegment()
@@ -86,7 +86,7 @@ func TestSegmentMan_GetSegment(t *testing.T) {
 
 func TestSegmentMan_IsAllComplete(t *testing.T) {
 	ps := newMockPieceStorage(5, 1024)
-	sm := NewSegmentMan(ps)
+	sm := NewSegmentMan(ps, 20)
 
 	if sm.IsAllComplete() {
 		t.Error("Should not be complete initially")

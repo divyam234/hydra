@@ -6,17 +6,22 @@ import (
 
 // SegmentMan manages the segments of a download
 type SegmentMan struct {
-	pieceStorage PieceStorage
-	segments     map[int]*Segment // Active segments by segment index
-	mu           sync.Mutex
-	nextSegIndex int
+	pieceStorage        PieceStorage
+	segments            map[int]*Segment // Active segments by segment index
+	mu                  sync.Mutex
+	nextSegIndex        int
+	maxPiecesPerSegment int
 }
 
 // NewSegmentMan creates a new SegmentMan
-func NewSegmentMan(ps PieceStorage) *SegmentMan {
+func NewSegmentMan(ps PieceStorage, maxPieces int) *SegmentMan {
+	if maxPieces <= 0 {
+		maxPieces = 20
+	}
 	return &SegmentMan{
-		pieceStorage: ps,
-		segments:     make(map[int]*Segment),
+		pieceStorage:        ps,
+		segments:            make(map[int]*Segment),
+		maxPiecesPerSegment: maxPieces,
 	}
 }
 
@@ -60,8 +65,7 @@ func (sm *SegmentMan) GetSegment() *Segment {
 	// up to a limit (e.g., 5MB or reasonable chunk)
 	endPiece := startPiece
 
-	// TODO: Make this configurable or smarter based on connection speed/file size
-	maxPieces := 20 // Increased from 5 to allow larger segments (e.g. 20MB with 1MB pieces)
+	maxPieces := sm.maxPiecesPerSegment
 
 	for i := startPiece + 1; i < totalPieces && i < startPiece+maxPieces; i++ {
 		if sm.pieceStorage.HasPiece(i) || activePieces[i] {
