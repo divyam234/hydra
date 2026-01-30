@@ -13,10 +13,22 @@ import (
 )
 
 var (
+	// These are set by ldflags during build
+	version   = "dev"
+	buildTime = "unknown"
+
 	rootCmd = &cobra.Command{
 		Use:   "hydra",
 		Short: "Hydra - Multi-Connection Download Manager",
 		Long:  `Hydra is a high-performance, multi-connection download manager written in Go.`,
+	}
+
+	versionCmd = &cobra.Command{
+		Use:   "version",
+		Short: "Print the version number of Hydra",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("Hydra %s (Built: %s)\n", version, buildTime)
+		},
 	}
 
 	downloadCmd = &cobra.Command{
@@ -73,13 +85,8 @@ var (
 				opts = append(opts, downloader.WithAuth(user, pass))
 			}
 			if httpProxy, _ := cmd.Flags().GetString("http-proxy"); httpProxy != "" {
-				// Note: internal engine uses separate options, but our library wrapper only exposed WithProxy (AllProxy)
-				// To fully support http vs https proxy in library, we might need to expand options.
-				// For now, let's assume WithProxy sets AllProxy which falls back.
-				// Wait, internal http client logic checks AllProxy first.
 				opts = append(opts, downloader.WithProxy(httpProxy))
 			}
-			// Handling https/all proxy similarly if set
 			if allProxy, _ := cmd.Flags().GetString("all-proxy"); allProxy != "" {
 				opts = append(opts, downloader.WithProxy(allProxy))
 			}
@@ -123,6 +130,7 @@ var (
 
 func init() {
 	rootCmd.AddCommand(downloadCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	downloadCmd.Flags().StringP("dir", "d", "", "Directory to store the downloaded file")
 	downloadCmd.Flags().StringP("out", "o", "", "The filename of the downloaded file")

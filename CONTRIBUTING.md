@@ -4,6 +4,11 @@ Thank you for your interest in contributing to Hydra! This document provides gui
 
 ## Getting Started
 
+### Prerequisites
+
+- [Go](https://go.dev/doc/install) 1.22+
+- [Task](https://taskfile.dev/installation/) (for running build tasks)
+
 1. Fork the repository
 2. Clone your fork:
    ```bash
