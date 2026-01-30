@@ -25,30 +25,32 @@ import (
 
 // RequestGroup represents a single download task
 type RequestGroup struct {
-	gid            GID
-	uris           []string
-	options        *option.Option
-	diskAdaptor    disk.DiskAdaptor
-	segmentMan     *segment.SegmentMan
-	pieceStorage   segment.PieceStorage
-	controller     *control.Controller
-	httpClient     *http.Client
-	limiter        *limit.BandwidthLimiter
-	speedCalc      *stats.SpeedCalc
-	console        *ui.Console
-	totalLength    int64
-	completedBytes atomic.Int64
-	outputPath     string
-	workers        int
+	gid                GID
+	uris               []string
+	options            *option.Option
+	diskAdaptor        disk.DiskAdaptor
+	segmentMan         *segment.SegmentMan
+	pieceStorage       segment.PieceStorage
+	controller         *control.Controller
+	httpClient         *http.Client
+	limiter            *limit.BandwidthLimiter
+	speedCalc          *stats.SpeedCalc
+	console            *ui.Console
+	totalLength        int64
+	completedBytes     atomic.Int64
+	outputPath         string
+	workers            int
+	speedCheckInterval time.Duration // For testing
 }
 
 // NewRequestGroup creates a new RequestGroup
 func NewRequestGroup(gid GID, uris []string, opt *option.Option) *RequestGroup {
 	return &RequestGroup{
-		gid:         gid,
-		uris:        uris,
-		options:     opt,
-		diskAdaptor: disk.NewDirectDiskAdaptor(),
+		gid:                gid,
+		uris:               uris,
+		options:            opt,
+		diskAdaptor:        disk.NewDirectDiskAdaptor(),
+		speedCheckInterval: 30 * time.Second,
 	}
 }
 
@@ -98,17 +100,17 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 	var loadedCF *control.ControlFile
 
 	if rg.controller.Exists() {
-		fmt.Printf("Found control file, attempting to resume...\n")
+		// fmt.Printf("Found control file, attempting to resume...\n")
 		loadedCF, err = rg.controller.Load()
 		if err == nil {
 			// Basic validation
 			if loadedCF.TotalLength > 0 {
 				resumed = true
 				rg.totalLength = loadedCF.TotalLength
-				fmt.Printf("Resuming download of %s (Size: %d)\n", out, rg.totalLength)
+				// fmt.Printf("Resuming download of %s (Size: %d)\n", out, rg.totalLength)
 			}
 		} else {
-			fmt.Printf("Failed to load control file: %v. Starting fresh.\n", err)
+			// fmt.Printf("Failed to load control file: %v. Starting fresh.\n", err)
 		}
 	}
 
@@ -135,14 +137,20 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 		rg.totalLength = headResp.ContentLength
 		// Check for single connection fallback
 		if rg.totalLength <= 0 {
-			fmt.Println("File size unknown. Falling back to single connection download.")
-			return rg.downloadSingle(ctx, uriStr, rg.httpClient)
+			// fmt.Println("File size unknown. Falling back to single connection download.")
+			if err := rg.downloadSingle(ctx, uriStr, rg.httpClient); err != nil {
+				return err
+			}
+			return rg.verifyChecksum()
 		}
 
 		// Check Accept-Ranges
 		if headResp.Header.Get("Accept-Ranges") != "bytes" {
-			fmt.Println("Server does not support 'Accept-Ranges'. Falling back to single connection download.")
-			return rg.downloadSingle(ctx, uriStr, rg.httpClient)
+			// fmt.Println("Server does not support 'Accept-Ranges'. Falling back to single connection download.")
+			if err := rg.downloadSingle(ctx, uriStr, rg.httpClient); err != nil {
+				return err
+			}
+			return rg.verifyChecksum()
 		}
 
 		fmt.Printf("File size: %d bytes.\n", rg.totalLength)
@@ -183,7 +191,7 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 		// But only after we have totalLength
 		if rg.totalLength > 0 {
 			if err := rg.controller.Save(string(rg.gid), rg.pieceStorage, rg.uris, rg.outputPath); err != nil {
-				fmt.Printf("Initial save error: %v\n", err)
+				// fmt.Printf("Initial save error: %v\n", err)
 			}
 		}
 	}
@@ -262,24 +270,11 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 				return fmt.Errorf("download incomplete")
 			}
 			rg.console.ClearLine()
+
 			fmt.Println("Download complete.")
 			rg.controller.Remove() // Cleanup control file on success
 
-			// Verify Checksum
-			if checksum := rg.options.Get(option.Checksum); checksum != "" {
-				fmt.Printf("Verifying checksum %s...\n", checksum)
-				valid, err := util.VerifyChecksum(rg.outputPath, checksum)
-				if err != nil {
-					fmt.Printf("Checksum verification failed: %v\n", err)
-				} else if valid {
-					fmt.Println("Checksum OK")
-				} else {
-					fmt.Println("Checksum FAILED")
-					return fmt.Errorf("checksum failed")
-				}
-			}
-
-			return nil
+			return rg.verifyChecksum()
 		}
 	}
 }
@@ -287,8 +282,25 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 func (rg *RequestGroup) saveControlFile() {
 	err := rg.controller.Save(string(rg.gid), rg.pieceStorage, rg.uris, rg.outputPath)
 	if err != nil {
-		fmt.Printf("Failed to save control file: %v\n", err)
+		// fmt.Printf("Failed to save control file: %v\n", err)
 	}
+}
+
+// verifyChecksum performs checksum validation
+func (rg *RequestGroup) verifyChecksum() error {
+	if checksum := rg.options.Get(option.Checksum); checksum != "" {
+		fmt.Printf("Verifying checksum %s...\n", checksum)
+		valid, err := util.VerifyChecksum(rg.outputPath, checksum)
+		if err != nil {
+			fmt.Printf("Checksum verification failed: %v\n", err)
+		} else if valid {
+			fmt.Println("Checksum OK")
+		} else {
+			fmt.Println("Checksum FAILED")
+			return fmt.Errorf("checksum failed")
+		}
+	}
+	return nil
 }
 
 // enrichRequest adds headers and authentication to the request
@@ -402,7 +414,7 @@ func (rg *RequestGroup) downloadWorker(ctx context.Context, id int, uriStr strin
 				// Speed check variables
 				lastCheckTime := time.Now()
 				bytesSinceCheck := int64(0)
-				checkInterval := 30 * time.Second
+				checkInterval := rg.speedCheckInterval
 
 				for {
 					n, readErr := reader.Read(buf)

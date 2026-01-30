@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,7 +39,6 @@ func TestDownload_SlowServer(t *testing.T) {
 	opt := option.GetDefaultOptions()
 	opt.Put(option.Dir, tmpDir)
 	opt.Put(option.Out, "slow.dat")
-	// Use small split to force multiple connections if possible, though slow server might serialize
 	opt.Put(option.Split, "2")
 
 	rg := NewRequestGroup("slow-gid", []string{server.URL}, opt)
@@ -61,7 +61,6 @@ func TestDownload_ConnectionReset(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		// Send some data then hijack/close
 		w.Header().Set("Content-Length", "1000")
 		w.WriteHeader(http.StatusOK)
 		w.Write(make([]byte, 100))
@@ -154,13 +153,154 @@ func TestDownload_ContentLength_Mismatch(t *testing.T) {
 
 	rg := NewRequestGroup("mismatch-gid", []string{server.URL}, opt)
 	err := rg.Execute(context.Background())
-	// Depending on implementation, this might not error until checksum verification
-	// or might error during read. Basic http client usually errors on UnexpectedEOF.
 	if err == nil {
-		// Check file size
-		stat, _ := os.Stat(filepath.Join(tmpDir, "index.html")) // Default name from URL
+		stat, _ := os.Stat(filepath.Join(tmpDir, "index.html"))
 		if stat.Size() == 100 {
 			t.Fatal("File successfully created with full size despite missing data")
 		}
+	}
+}
+
+func TestDownload_Redirect_Loop(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/loop", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/loop", http.StatusFound)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	opt := option.GetDefaultOptions()
+	opt.Put(option.Dir, os.TempDir())
+
+	rg := NewRequestGroup("loop-gid", []string{server.URL + "/loop"}, opt)
+	err := rg.Execute(context.Background())
+	if err == nil {
+		t.Error("Expected error for redirect loop")
+	}
+}
+
+func TestDownload_DNS_Failure(t *testing.T) {
+	opt := option.GetDefaultOptions()
+	opt.Put(option.Dir, os.TempDir())
+
+	// Use invalid domain
+	rg := NewRequestGroup("dns-gid", []string{"http://invalid.domain.test.local/file"}, opt)
+	err := rg.Execute(context.Background())
+	if err == nil {
+		t.Error("Expected DNS error")
+	}
+}
+
+func TestDownload_PartialContent_Mismatch(t *testing.T) {
+	// Server claims to support ranges but returns 200 OK for Range request
+	// This should trigger fallback to single connection, but if we forced multiple connections, it might be tricky.
+	// Our client handles this by falling back.
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Accept-Ranges", "bytes") // Claim support
+		if r.Method == "HEAD" {
+			w.Header().Set("Content-Length", "100")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// If client asks for range, ignore it and send full 200
+		if r.Header.Get("Range") != "" {
+			w.Header().Set("Content-Length", "100")
+			w.WriteHeader(http.StatusOK) // 200 OK, not 206
+			w.Write(make([]byte, 100))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tmpDir, _ := os.MkdirTemp("", "aria2go_partial_mismatch")
+	defer os.RemoveAll(tmpDir)
+
+	opt := option.GetDefaultOptions()
+	opt.Put(option.Dir, tmpDir)
+	opt.Put(option.Split, "4") // Try to use multiple connections
+
+	rg := NewRequestGroup("pmismatch-gid", []string{server.URL}, opt)
+	err := rg.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to handle partial content mismatch: %v", err)
+	}
+
+	// Should have succeeded via fallback
+	content, _ := os.ReadFile(filepath.Join(tmpDir, "index.html"))
+	if len(content) != 100 {
+		t.Errorf("Expected 100 bytes, got %d", len(content))
+	}
+}
+
+func TestDownload_SSL_Error(t *testing.T) {
+	// HTTPS server with self-signed cert
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("secure content"))
+	}))
+	defer server.Close()
+
+	opt := option.GetDefaultOptions()
+	opt.Put(option.Dir, os.TempDir())
+
+	// Client should fail validation by default
+	rg := NewRequestGroup("ssl-gid", []string{server.URL}, opt)
+	err := rg.Execute(context.Background())
+	if err == nil {
+		t.Error("Expected SSL error")
+	}
+}
+
+func TestDownload_Redirect_Chain(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/step1", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/step2", http.StatusFound)
+	})
+	mux.HandleFunc("/step2", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/step3", http.StatusFound)
+	})
+	mux.HandleFunc("/step3", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("chain complete"))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	tmpDir, _ := os.MkdirTemp("", "aria2go_chain")
+	defer os.RemoveAll(tmpDir)
+
+	opt := option.GetDefaultOptions()
+	opt.Put(option.Dir, tmpDir)
+	opt.Put(option.Out, "chain.dat")
+
+	rg := NewRequestGroup("chain-gid", []string{server.URL + "/step1"}, opt)
+	err := rg.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Redirect chain failed: %v", err)
+	}
+
+	content, _ := os.ReadFile(filepath.Join(tmpDir, "chain.dat"))
+	if string(content) != "chain complete" {
+		t.Errorf("Expected 'chain complete', got '%s'", content)
+	}
+}
+
+func TestError_ServerError_5xx(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	opt := option.GetDefaultOptions()
+	opt.Put(option.Dir, os.TempDir())
+	opt.Put(option.MaxTries, "1") // Don't retry forever
+
+	rg := NewRequestGroup("5xx-gid", []string{server.URL}, opt)
+	err := rg.Execute(context.Background())
+	if err == nil {
+		t.Error("Expected 5xx error")
+	} else if !strings.Contains(err.Error(), "503") {
+		t.Errorf("Expected 503 error, got: %v", err)
 	}
 }
