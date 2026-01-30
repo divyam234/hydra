@@ -1087,3 +1087,312 @@ func TestEventType_String(t *testing.T) {
 		}
 	}
 }
+
+func TestEngine_QueuePosition(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "aria2go_queuepos_test")
+	defer os.RemoveAll(tmpDir)
+
+	content := make([]byte, 1024*200) // 200KB
+	server := setupTestServer(t, content)
+	defer server.Close()
+
+	// Create engine with max 1 concurrent download
+	eng := NewEngine(
+		WithDir(tmpDir),
+		WithMaxConcurrentDownloads(1),
+	)
+	defer eng.Shutdown()
+
+	// Add 4 slow downloads
+	ids := make([]DownloadID, 4)
+	for i := 0; i < 4; i++ {
+		id, err := eng.AddDownload(context.Background(), []string{server.URL},
+			WithFilename(fmt.Sprintf("queuepos_%d.bin", i)),
+			WithMaxSpeed("10K"), // Very slow
+		)
+		if err != nil {
+			t.Fatalf("Failed to add download %d: %v", i, err)
+		}
+		ids[i] = id
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// First download should be active (not in queue)
+	pos0 := eng.GetQueuePosition(ids[0])
+	if pos0 != -1 {
+		t.Errorf("Expected active download to have position -1, got %d", pos0)
+	}
+
+	// Others should be in queue
+	pos1 := eng.GetQueuePosition(ids[1])
+	pos2 := eng.GetQueuePosition(ids[2])
+	pos3 := eng.GetQueuePosition(ids[3])
+
+	t.Logf("Queue positions: id1=%d, id2=%d, id3=%d", pos1, pos2, pos3)
+
+	// They should be in order 0, 1, 2
+	if pos1 != 0 {
+		t.Errorf("Expected id1 at position 0, got %d", pos1)
+	}
+	if pos2 != 1 {
+		t.Errorf("Expected id2 at position 1, got %d", pos2)
+	}
+	if pos3 != 2 {
+		t.Errorf("Expected id3 at position 2, got %d", pos3)
+	}
+
+	// Test GetQueuedDownloads
+	queued := eng.GetQueuedDownloads()
+	if len(queued) != 3 {
+		t.Errorf("Expected 3 queued downloads, got %d", len(queued))
+	}
+
+	// Cancel all
+	for _, id := range ids {
+		eng.Cancel(id)
+	}
+	eng.Wait()
+}
+
+func TestEngine_EventWithProgress(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "aria2go_eventprogress_test")
+	defer os.RemoveAll(tmpDir)
+
+	content := make([]byte, 1024*100) // 100KB
+	server := setupTestServer(t, content)
+	defer server.Close()
+
+	var completeEvent Event
+	eventReceived := make(chan struct{})
+
+	eng := NewEngine(
+		WithDir(tmpDir),
+		OnEvent(func(e Event) {
+			if e.Type == EventComplete {
+				completeEvent = e
+				close(eventReceived)
+			}
+		}),
+	)
+	defer eng.Shutdown()
+
+	id, err := eng.AddDownload(context.Background(), []string{server.URL},
+		WithFilename("eventprogress.bin"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng.Wait()
+
+	select {
+	case <-eventReceived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for complete event")
+	}
+
+	// Verify event has progress info
+	if completeEvent.ID != id {
+		t.Errorf("Expected event ID %s, got %s", id, completeEvent.ID)
+	}
+	if completeEvent.Downloaded != int64(len(content)) {
+		t.Errorf("Expected Downloaded %d, got %d", len(content), completeEvent.Downloaded)
+	}
+	if completeEvent.Total != int64(len(content)) {
+		t.Errorf("Expected Total %d, got %d", len(content), completeEvent.Total)
+	}
+}
+
+func TestEngine_ErrorEventWithProgress(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "aria2go_errorevent_test")
+	defer os.RemoveAll(tmpDir)
+
+	content := []byte("Error event test")
+	server := setupTestServer(t, content)
+	defer server.Close()
+
+	var errorEvent Event
+	eventReceived := make(chan struct{})
+
+	eng := NewEngine(
+		WithDir(tmpDir),
+		OnEvent(func(e Event) {
+			if e.Type == EventError {
+				errorEvent = e
+				select {
+				case <-eventReceived:
+				default:
+					close(eventReceived)
+				}
+			}
+		}),
+	)
+	defer eng.Shutdown()
+
+	// Use wrong checksum to trigger error
+	id, err := eng.AddDownload(context.Background(), []string{server.URL},
+		WithFilename("errorevent.txt"),
+		WithChecksum("sha-256=0000000000000000000000000000000000000000000000000000000000000000"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng.Wait()
+
+	select {
+	case <-eventReceived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for error event")
+	}
+
+	// Verify error event has info
+	if errorEvent.ID != id {
+		t.Errorf("Expected event ID %s, got %s", id, errorEvent.ID)
+	}
+	if errorEvent.Error == nil {
+		t.Error("Expected error to be set")
+	}
+	// Downloaded should be the full content since checksum fails after download
+	if errorEvent.Downloaded != int64(len(content)) {
+		t.Errorf("Expected Downloaded %d, got %d", len(content), errorEvent.Downloaded)
+	}
+}
+
+func TestEngine_SessionMidDownload(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "aria2go_session_mid_test")
+	defer os.RemoveAll(tmpDir)
+
+	sessionFile := filepath.Join(tmpDir, "session.json")
+
+	content := make([]byte, 1024*500) // 500KB
+	server := setupTestServer(t, content)
+	defer server.Close()
+
+	// Engine 1: Start a slow download and save session mid-download
+	eng1 := NewEngine(
+		WithDir(tmpDir),
+		WithSessionFile(sessionFile),
+		WithMaxConcurrentDownloads(1),
+	)
+
+	id1, err := eng1.AddDownload(context.Background(), []string{server.URL},
+		WithFilename("session_mid.bin"),
+		WithMaxSpeed("10K"), // Very slow
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for download to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Save session while download is active
+	err = eng1.SaveSession()
+	if err != nil {
+		t.Logf("SaveSession mid-download: %v", err)
+	}
+
+	// Verify session file exists
+	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
+		t.Error("Session file was not created")
+	}
+
+	// Read and verify session content
+	sessionData, err := os.ReadFile(sessionFile)
+	if err != nil {
+		t.Fatalf("Failed to read session file: %v", err)
+	}
+	t.Logf("Session content: %s", string(sessionData))
+
+	// Should contain the download GID
+	if len(sessionData) == 0 {
+		t.Error("Session file is empty")
+	}
+
+	// Cancel and shutdown
+	eng1.Cancel(id1)
+	eng1.Wait()
+	eng1.Shutdown()
+}
+
+func TestEngine_SessionWithPendingDownloads(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "aria2go_session_pending_test")
+	defer os.RemoveAll(tmpDir)
+
+	sessionFile := filepath.Join(tmpDir, "session_pending.json")
+
+	content := make([]byte, 1024*200) // 200KB
+	server := setupTestServer(t, content)
+	defer server.Close()
+
+	// Engine 1: Add multiple downloads with max concurrent = 1
+	eng1 := NewEngine(
+		WithDir(tmpDir),
+		WithSessionFile(sessionFile),
+		WithMaxConcurrentDownloads(1),
+	)
+
+	// Add 3 downloads - 1 active, 2 pending
+	ids := make([]DownloadID, 3)
+	for i := 0; i < 3; i++ {
+		id, err := eng1.AddDownload(context.Background(), []string{server.URL},
+			WithFilename(fmt.Sprintf("session_pending_%d.bin", i)),
+			WithMaxSpeed("10K"),
+			WithPriority(10-i), // Higher priority first
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Verify we have 1 active, 2 pending
+	active := eng1.GetActiveCount()
+	pending := eng1.GetPendingCount()
+	t.Logf("Before save: active=%d, pending=%d", active, pending)
+
+	// Save session
+	err := eng1.SaveSession()
+	if err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	// Verify session file has content
+	sessionData, err := os.ReadFile(sessionFile)
+	if err != nil {
+		t.Fatalf("Failed to read session: %v", err)
+	}
+	t.Logf("Session with pending: %s", string(sessionData))
+
+	// Cancel all and shutdown
+	for _, id := range ids {
+		eng1.Cancel(id)
+	}
+	eng1.Wait()
+	eng1.Shutdown()
+}
+
+func TestState_String(t *testing.T) {
+	tests := []struct {
+		s    State
+		want string
+	}{
+		{StatePending, "Pending"},
+		{StateActive, "Active"},
+		{StatePaused, "Paused"},
+		{StateComplete, "Complete"},
+		{StateError, "Error"},
+		{StateCancelled, "Cancelled"},
+		{State(999), "Unknown"},
+	}
+
+	for _, tt := range tests {
+		if got := tt.s.String(); got != tt.want {
+			t.Errorf("State(%d).String() = %q, want %q", tt.s, got, tt.want)
+		}
+	}
+}

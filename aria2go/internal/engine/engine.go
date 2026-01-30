@@ -24,9 +24,12 @@ const (
 
 // Event represents a download event
 type Event struct {
-	Type  EventType
-	GID   GID
-	Error error
+	Type       EventType
+	GID        GID
+	Error      error
+	Downloaded int64 // Bytes downloaded so far
+	Total      int64 // Total bytes
+	Speed      int   // Current speed in bytes/sec
 }
 
 // EventCallback is a function called when events occur
@@ -178,18 +181,18 @@ func (e *DownloadEngine) startDownload(ctx context.Context, rg *RequestGroup) {
 		}()
 
 		// Fire start event
-		e.fireEvent(Event{Type: EventStart, GID: rg.gid})
+		e.fireEventWithProgress(EventStart, rg, nil)
 
 		if err := rg.Execute(childCtx); err != nil {
 			fmt.Printf("Download %s failed: %v\n", rg.gid, err)
 			if rg.IsCancelled() {
-				e.fireEvent(Event{Type: EventCancel, GID: rg.gid})
+				e.fireEventWithProgress(EventCancel, rg, nil)
 			} else {
-				e.fireEvent(Event{Type: EventError, GID: rg.gid, Error: err})
+				e.fireEventWithProgress(EventError, rg, err)
 			}
 		} else {
 			fmt.Printf("Download %s completed\n", rg.gid)
-			e.fireEvent(Event{Type: EventComplete, GID: rg.gid})
+			e.fireEventWithProgress(EventComplete, rg, nil)
 		}
 		close(done)
 	}()
@@ -221,6 +224,24 @@ func (e *DownloadEngine) fireEvent(event Event) {
 	if e.eventCallback != nil {
 		e.eventCallback(event)
 	}
+}
+
+// fireEventWithProgress fires an event with progress info from the request group
+func (e *DownloadEngine) fireEventWithProgress(eventType EventType, rg *RequestGroup, err error) {
+	if e.eventCallback == nil {
+		return
+	}
+
+	status := rg.GetFullStatus()
+	event := Event{
+		Type:       eventType,
+		GID:        rg.gid,
+		Error:      err,
+		Downloaded: status.Completed,
+		Total:      status.Total,
+		Speed:      status.Speed,
+	}
+	e.eventCallback(event)
 }
 
 // SetUI sets the user interface for all new downloads
@@ -296,7 +317,7 @@ func (e *DownloadEngine) Pause(gid GID) bool {
 		return false
 	}
 	if rg.Pause() {
-		e.fireEvent(Event{Type: EventPause, GID: gid})
+		e.fireEventWithProgress(EventPause, rg, nil)
 		return true
 	}
 	return false
@@ -312,7 +333,7 @@ func (e *DownloadEngine) Resume(gid GID) bool {
 		return false
 	}
 	if rg.Resume() {
-		e.fireEvent(Event{Type: EventResume, GID: gid})
+		e.fireEventWithProgress(EventResume, rg, nil)
 		return true
 	}
 	return false
@@ -413,4 +434,31 @@ func (e *DownloadEngine) SetMaxConcurrent(n int) {
 			e.startDownload(context.Background(), next)
 		}
 	}
+}
+
+// GetQueuePosition returns the position of a download in the pending queue.
+// Returns -1 if the download is not in the queue (either active, completed, or not found).
+// Position 0 means it's next to be started.
+func (e *DownloadEngine) GetQueuePosition(gid GID) int {
+	e.queueMu.Lock()
+	defer e.queueMu.Unlock()
+
+	for i, rg := range e.pendingQueue {
+		if rg.gid == gid {
+			return i
+		}
+	}
+	return -1
+}
+
+// GetQueuedDownloads returns the GIDs of all pending downloads in queue order
+func (e *DownloadEngine) GetQueuedDownloads() []GID {
+	e.queueMu.Lock()
+	defer e.queueMu.Unlock()
+
+	gids := make([]GID, len(e.pendingQueue))
+	for i, rg := range e.pendingQueue {
+		gids[i] = rg.gid
+	}
+	return gids
 }

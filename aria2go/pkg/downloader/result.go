@@ -103,7 +103,10 @@ func (e EventType) String() string {
 
 // Event represents a download event
 type Event struct {
-	Type  EventType
-	ID    DownloadID
-	Error error
+	Type       EventType
+	ID         DownloadID
+	Error      error
+	Downloaded int64 // Bytes downloaded so far
+	Total      int64 // Total bytes
+	Speed      int64 // Current speed in bytes/sec
 }

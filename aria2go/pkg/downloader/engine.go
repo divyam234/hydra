@@ -36,9 +36,12 @@ func NewEngine(opts ...Option) *Engine {
 	if cfg.eventCb != nil {
 		engineOpts = append(engineOpts, engine.WithEventCallback(func(e engine.Event) {
 			cfg.eventCb(Event{
-				Type:  EventType(e.Type),
-				ID:    DownloadID(e.GID),
-				Error: e.Error,
+				Type:       EventType(e.Type),
+				ID:         DownloadID(e.GID),
+				Error:      e.Error,
+				Downloaded: e.Downloaded,
+				Total:      e.Total,
+				Speed:      int64(e.Speed),
 			})
 		}))
 	}
@@ -223,6 +226,23 @@ func (e *Engine) GetPendingCount() int {
 // SetMaxConcurrentDownloads changes the max concurrent downloads limit
 func (e *Engine) SetMaxConcurrentDownloads(n int) {
 	e.internal.SetMaxConcurrent(n)
+}
+
+// GetQueuePosition returns the position of a download in the pending queue.
+// Returns -1 if the download is not in the queue (either active, completed, or not found).
+// Position 0 means it's next to be started.
+func (e *Engine) GetQueuePosition(id DownloadID) int {
+	return e.internal.GetQueuePosition(engine.GID(id))
+}
+
+// GetQueuedDownloads returns the IDs of all pending downloads in queue order
+func (e *Engine) GetQueuedDownloads() []DownloadID {
+	gids := e.internal.GetQueuedDownloads()
+	ids := make([]DownloadID, len(gids))
+	for i, gid := range gids {
+		ids[i] = DownloadID(gid)
+	}
+	return ids
 }
 
 // callbackUI adapts the UI interface to a callback
