@@ -39,13 +39,6 @@ tasks:
     cmds:
       - go test -race -v ./...
 
-  test-cover:
-    desc: Run tests with coverage
-    cmds:
-      - go test -race -coverprofile=coverage.out ./...
-      - go tool cover -html=coverage.out -o coverage.html
-      - echo "Coverage report: coverage.html"
-
   lint:
     desc: Run linters
     cmds:
@@ -67,7 +60,6 @@ tasks:
     desc: Clean build artifacts
     cmds:
       - rm -rf {{.BUILD_DIR}}
-      - rm -f coverage.out coverage.html dist/
 
   install:
     desc: Install the binary
