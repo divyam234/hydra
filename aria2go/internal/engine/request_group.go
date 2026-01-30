@@ -93,6 +93,7 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 
 	// 2. Initialize Controller and check for resume
 	rg.controller = control.NewController(rg.outputPath)
+	rg.httpClient = internalhttp.NewClient(rg.options) // Initialize once here
 	var resumed bool
 	var loadedCF *control.ControlFile
 
@@ -114,7 +115,6 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 	if !resumed {
 		fmt.Printf("Downloading %s to %s\n", uriStr, out)
 		// Get File Size (HEAD Request)
-		rg.httpClient = internalhttp.NewClient(rg.options)
 		headReq, err := http.NewRequestWithContext(ctx, "HEAD", uriStr, nil)
 		if err != nil {
 			return err
@@ -162,8 +162,6 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 
 	// Restore bitfield if resumed
 	if resumed {
-		rg.httpClient = internalhttp.NewClient(rg.options)
-
 		if loadedCF.Bitfield != "" {
 			if err := rg.pieceStorage.GetBitfield().FromHexString(loadedCF.Bitfield); err != nil {
 				fmt.Printf("Warning: failed to restore bitfield: %v\n", err)
@@ -180,6 +178,14 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 				rg.completedBytes.Store(restoredBytes)
 			}
 		}
+	} else {
+		// Save initial control file for fresh downloads
+		// But only after we have totalLength
+		if rg.totalLength > 0 {
+			if err := rg.controller.Save(string(rg.gid), rg.pieceStorage, rg.uris, rg.outputPath); err != nil {
+				fmt.Printf("Initial save error: %v\n", err)
+			}
+		}
 	}
 
 	// 4. Open Disk Adaptor
@@ -188,7 +194,7 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 	}
 	defer rg.diskAdaptor.Close()
 
-	// 5. Start Workers
+	// Start Workers
 	maxConns, _ := rg.options.GetAsInt(option.Split)
 	if maxConns <= 0 {
 		maxConns = 1
@@ -207,6 +213,9 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 		}(i)
 	}
 
+	// Immediate save for testing/consistency
+	rg.saveControlFile()
+
 	// Auto-save and Stats ticker
 	ticker := time.NewTicker(30 * time.Second)     // Auto-save every 30s
 	statsTicker := time.NewTicker(1 * time.Second) // Stats every 1s
@@ -223,7 +232,11 @@ func (rg *RequestGroup) Execute(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			rg.saveControlFile()
+			// Don't save if it was a cancellation during initialization?
+			// Actually we want to save what we have.
+			if rg.totalLength > 0 {
+				rg.saveControlFile()
+			}
 			return ctx.Err()
 		case err := <-errChan:
 			rg.saveControlFile()
@@ -292,12 +305,13 @@ func (rg *RequestGroup) enrichRequest(req *http.Request) {
 
 	// Custom Headers
 	if headers := rg.options.Get(option.Header); headers != "" {
-		// Expect multiple headers to be handled by option system potentially as list
-		// For now simple single string splitting if manually joined, but option system likely stores last one
-		// or we need GetAll. Assuming single header or manual implementation for now.
-		parts := strings.SplitN(headers, ":", 2)
-		if len(parts) == 2 {
-			req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+		// Support multiple headers joined by \n
+		lines := strings.Split(headers, "\n")
+		for _, line := range lines {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+			}
 		}
 	}
 
@@ -472,11 +486,24 @@ func (rg *RequestGroup) downloadSingle(ctx context.Context, uriStr string, clien
 		}
 
 		err := func() error {
-			// Implement simple streaming download
+			// Check for existing file to support simple resume in single mode
+			var startPos int64 = 0
+			fileMode := os.O_CREATE | os.O_WRONLY
+
+			if stat, err := os.Stat(rg.outputPath); err == nil {
+				startPos = stat.Size()
+				fileMode = os.O_APPEND | os.O_WRONLY
+			}
+
 			req, err := http.NewRequestWithContext(ctx, "GET", uriStr, nil)
 			if err != nil {
 				return err
 			}
+
+			if startPos > 0 {
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startPos))
+			}
+
 			rg.enrichRequest(req)
 
 			resp, err := client.Do(req)
@@ -485,12 +512,20 @@ func (rg *RequestGroup) downloadSingle(ctx context.Context, uriStr string, clien
 			}
 			defer resp.Body.Close()
 
-			if resp.StatusCode != http.StatusOK {
+			if startPos > 0 && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+				// File already complete or range error
+				return nil
+			}
+
+			if startPos > 0 && resp.StatusCode != http.StatusPartialContent {
+				// Server doesn't support resume, restart
+				startPos = 0
+				fileMode = os.O_CREATE | os.O_WRONLY
+			} else if startPos == 0 && resp.StatusCode != http.StatusOK {
 				return fmt.Errorf("server returned %s", resp.Status)
 			}
 
-			// Prepare output file (overwrite for single mode simplification)
-			f, err := os.Create(rg.outputPath)
+			f, err := os.OpenFile(rg.outputPath, fileMode, 0666)
 			if err != nil {
 				return err
 			}
@@ -502,7 +537,8 @@ func (rg *RequestGroup) downloadSingle(ctx context.Context, uriStr string, clien
 				reader = limit.NewReader(resp.Body, rg.limiter, ctx)
 			}
 
-			totalWritten := int64(0)
+			totalWritten := startPos
+			rg.completedBytes.Store(startPos)
 			lastUpdate := time.Now()
 
 			for {
@@ -512,11 +548,11 @@ func (rg *RequestGroup) downloadSingle(ctx context.Context, uriStr string, clien
 					if writeErr != nil {
 						return writeErr
 					}
-					totalWritten += int64(n)
+					written := int64(n)
+					totalWritten += written
 					rg.speedCalc.Update(n)
-					rg.completedBytes.Add(int64(n))
+					rg.completedBytes.Add(written)
 
-					// Simple progress update for single connection
 					if time.Since(lastUpdate) > time.Second {
 						rg.console.PrintProgress(string(rg.gid), rg.totalLength, totalWritten, rg.speedCalc.GetSpeed(), 1)
 						lastUpdate = time.Now()

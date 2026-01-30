@@ -65,8 +65,9 @@ func (e *DownloadEngine) Shutdown() {
 }
 
 // Run waits for all downloads to complete (for CLI usage)
-func (e *DownloadEngine) Run() {
+func (e *DownloadEngine) Run() error {
 	// Simple run implementation for now - wait for completion
 	// In real implementation, this would handle signals and event loop
 	e.wg.Wait()
+	return nil
 }

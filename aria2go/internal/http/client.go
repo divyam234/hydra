@@ -30,10 +30,15 @@ func NewClient(opt *option.Option) *http.Client {
 	}
 
 	// Default transport settings
+	connectTimeout := 30
+	if t, _ := opt.GetAsInt(option.ConnectTimeout); t > 0 {
+		connectTimeout = t
+	}
+
 	transport := &http.Transport{
 		Proxy: proxyFunc,
 		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
+			Timeout:   time.Duration(connectTimeout) * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,

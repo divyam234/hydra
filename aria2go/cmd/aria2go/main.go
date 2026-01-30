@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/bhunter/aria2go/internal/engine"
@@ -58,22 +59,8 @@ written in Go, inspired by aria2c.`,
 				opt.Put(option.LoadCookies, cookies)
 			}
 			if headers, _ := cmd.Flags().GetStringSlice("header"); len(headers) > 0 {
-				// We currently only support one header line in option.Option if it's a map[string]string
-				// and option.Header is "header".
-				// To support multiple, we might need to join them or change Option to hold list.
-				// For now, let's join with \n or just take the first/last?
-				// RequestGroup uses strings.SplitN(val, ":", 2).
-				// It seems RequestGroup only handles ONE header currently (line 281).
-				// This is a limitation. I'll pass the last one or comma join? Headers can't be comma joined safely.
-				// Let's just pick the last one for now or loop and set if we could.
-				// BETTER: Update RequestGroup to handle multiple headers.
-				// But given current Option struct (map[string]string), we can't store multiple.
-				// I'll stick to last one for now as per current limitation.
-				// Wait, I can't easily change Option structure right now without breaking things.
-				// I'll just use the last one.
-				for _, h := range headers {
-					opt.Put(option.Header, h)
-				}
+				// Join multiple headers with \n to store in single option string
+				opt.Put(option.Header, strings.Join(headers, "\n"))
 			}
 			if ref, _ := cmd.Flags().GetString("referer"); ref != "" {
 				opt.Put(option.Referer, ref)
@@ -120,7 +107,10 @@ written in Go, inspired by aria2c.`,
 				eng.Shutdown()
 			}()
 
-			eng.Run()
+			if err := eng.Run(); err != nil {
+				fmt.Printf("Engine error: %v\n", err)
+				os.Exit(1)
+			}
 		},
 	}
 )
