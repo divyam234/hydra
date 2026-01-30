@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhunter/hydra/pkg/option"
+	"github.com/divyam234/hydra/pkg/option"
 )
 
 // Test HTTP server that supports Range requests

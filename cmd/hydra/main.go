@@ -8,7 +8,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/bhunter/hydra/pkg/downloader"
+	"github.com/divyam234/hydra/pkg/downloader"
 	"github.com/spf13/cobra"
 )
 

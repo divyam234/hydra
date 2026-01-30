@@ -23,18 +23,21 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
 
-      - name: Get dependencies
-        run: go mod download
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build
-        run: go build -v ./...
+        run: task build
 
       - name: Test
-        run: go test -v ./...
+        run: task test
 
       - name: Test with race detector
         if: matrix.os == 'ubuntu-latest'
-        run: go test -race -v ./...
+        run: task test-race
 
   lint:
     name: Lint
@@ -47,13 +50,17 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Run go vet
-        run: go vet ./...
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run golangci-lint
+      - name: Run lint
         uses: golangci/golangci-lint-action@v4
         with:
           version: latest
+          args: --timeout=5m
 
   coverage:
     name: Coverage
@@ -66,8 +73,14 @@ jobs:
         with:
           go-version: '1.22'
 
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run tests with coverage
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        run: task test-cover
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhunter/hydra/pkg/option"
+	"github.com/divyam234/hydra/pkg/option"
 )
 
 func TestOption_RateLimiting(t *testing.T) {

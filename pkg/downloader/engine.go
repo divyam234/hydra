@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bhunter/hydra/internal/engine"
-	"github.com/bhunter/hydra/internal/ui"
-	"github.com/bhunter/hydra/pkg/option"
+	"github.com/divyam234/hydra/internal/engine"
+	"github.com/divyam234/hydra/internal/ui"
+	"github.com/divyam234/hydra/pkg/option"
 )
 
 // Engine manages concurrent downloads

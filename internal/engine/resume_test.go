@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bhunter/hydra/pkg/option"
+	"github.com/divyam234/hydra/pkg/option"
 )
 
 // Helper to create a standard range server

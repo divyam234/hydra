@@ -11,7 +11,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/bhunter/hydra/pkg/option"
+	"github.com/divyam234/hydra/pkg/option"
 )
 
 func TestChecksum_Validation(t *testing.T) {

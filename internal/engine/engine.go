@@ -6,8 +6,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/bhunter/hydra/internal/ui"
-	"github.com/bhunter/hydra/pkg/option"
+	"github.com/divyam234/hydra/internal/ui"
+	"github.com/divyam234/hydra/pkg/option"
 )
 
 // EventType represents the type of download event

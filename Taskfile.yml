@@ -1,0 +1,85 @@
+version: '3'
+
+vars:
+  BINARY: hydra
+  BUILD_DIR: build
+  GO_FILES:
+    sh: find . -name "*.go"
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+  BUILD_TIME:
+    sh: date -u '+%Y-%m-%d_%H:%M:%S'
+
+tasks:
+  default:
+    desc: Build the binary
+    cmds:
+      - task: build
+
+  build:
+    desc: Build the binary
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - go build -ldflags "-X main.version={{.VERSION}} -X main.buildTime={{.BUILD_TIME}}" -o {{.BUILD_DIR}}/{{.BINARY}} ./cmd/hydra
+    sources:
+      - ./**/*.go
+
+  run:
+    desc: Run the CLI
+    cmds:
+      - go run ./cmd/hydra {{.CLI_ARGS}}
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test -v ./...
+
+  test-race:
+    desc: Run tests with race detector
+    cmds:
+      - go test -race -v ./...
+
+  test-cover:
+    desc: Run tests with coverage
+    cmds:
+      - go test -race -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - echo "Coverage report: coverage.html"
+
+  lint:
+    desc: Run linters
+    cmds:
+      - go vet ./...
+      - golangci-lint run ./...
+    ignore_error: true
+
+  fmt:
+    desc: Format code
+    cmds:
+      - go fmt ./...
+
+  tidy:
+    desc: Tidy dependencies
+    cmds:
+      - go mod tidy
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -rf {{.BUILD_DIR}}
+      - rm -f coverage.out coverage.html dist/
+
+  install:
+    desc: Install the binary
+    cmds:
+      - go install ./cmd/hydra
+
+  snapshot:
+    desc: Create a snapshot release with GoReleaser
+    cmds:
+      - goreleaser release --snapshot --clean
+
+  release:
+    desc: Create a release with GoReleaser
+    cmds:
+      - goreleaser release --clean

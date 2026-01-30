@@ -17,7 +17,7 @@ Complete Go library documentation for Hydra.
 ## Installation
 
 ```bash
-go get github.com/bhunter/hydra
+go get github.com/divyam234/hydra
 ```
 
 ## Quick Start
@@ -28,7 +28,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -44,10 +44,10 @@ func main() {
 
 ## Package Overview
 
-The main package is `github.com/bhunter/hydra/pkg/downloader`.
+The main package is `github.com/divyam234/hydra/pkg/downloader`.
 
 ```go
-import "github.com/bhunter/hydra/pkg/downloader"
+import "github.com/divyam234/hydra/pkg/downloader"
 ```
 
 ## Types

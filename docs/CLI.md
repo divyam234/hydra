@@ -16,10 +16,10 @@ Complete command-line interface documentation for Hydra.
 
 ```bash
 # Install from Go
-go install github.com/bhunter/hydra/cmd/hydra@latest
+go install github.com/divyam234/hydra/cmd/hydra@latest
 
 # Or build from source
-git clone https://github.com/bhunter/hydra.git
+git clone https://github.com/divyam234/hydra.git
 cd hydra
 go build -o hydra ./cmd/hydra
 ```

@@ -12,7 +12,7 @@ Thank you for your interest in contributing to Hydra! This document provides gui
    ```
 3. Add the upstream remote:
    ```bash
-   git remote add upstream https://github.com/bhunter/hydra.git
+   git remote add upstream https://github.com/divyam234/hydra.git
    ```
 4. Install dependencies:
    ```bash
@@ -24,32 +24,32 @@ Thank you for your interest in contributing to Hydra! This document provides gui
 ### Building
 
 ```bash
-make build
+task build
 ```
 
 ### Running Tests
 
 ```bash
 # Run all tests
-make test
+task test
 
 # Run tests with race detector
-make test-race
+task test-race
 
 # Run tests with coverage
-make test-cover
+task test-cover
 ```
 
 ### Linting
 
 ```bash
-make lint
+task lint
 ```
 
 ### Formatting
 
 ```bash
-make fmt
+task fmt
 ```
 
 ## Code Guidelines
@@ -91,8 +91,8 @@ make fmt
 
 3. Ensure all tests pass:
    ```bash
-   make test-race
-   make lint
+   task test-race
+   task lint
    ```
 
 4. Push to your fork:

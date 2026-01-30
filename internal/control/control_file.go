@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/bhunter/hydra/internal/segment"
+	"github.com/divyam234/hydra/internal/segment"
 )
 
 // ControlFile represents the state of a download

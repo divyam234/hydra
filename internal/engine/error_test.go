@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bhunter/hydra/pkg/option"
+	"github.com/divyam234/hydra/pkg/option"
 )
 
 // Category 4: Error Handling

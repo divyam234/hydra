@@ -3,7 +3,7 @@ package downloader
 import (
 	"fmt"
 
-	"github.com/bhunter/hydra/pkg/option"
+	"github.com/divyam234/hydra/pkg/option"
 )
 
 // config holds the configuration for a download

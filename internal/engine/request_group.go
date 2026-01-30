@@ -12,15 +12,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bhunter/hydra/internal/control"
-	"github.com/bhunter/hydra/internal/disk"
-	internalhttp "github.com/bhunter/hydra/internal/http"
-	"github.com/bhunter/hydra/internal/limit"
-	"github.com/bhunter/hydra/internal/segment"
-	"github.com/bhunter/hydra/internal/stats"
-	"github.com/bhunter/hydra/internal/ui"
-	"github.com/bhunter/hydra/internal/util"
-	"github.com/bhunter/hydra/pkg/option"
+	"github.com/divyam234/hydra/internal/control"
+	"github.com/divyam234/hydra/internal/disk"
+	internalhttp "github.com/divyam234/hydra/internal/http"
+	"github.com/divyam234/hydra/internal/limit"
+	"github.com/divyam234/hydra/internal/segment"
+	"github.com/divyam234/hydra/internal/stats"
+	"github.com/divyam234/hydra/internal/ui"
+	"github.com/divyam234/hydra/internal/util"
+	"github.com/divyam234/hydra/pkg/option"
 )
 
 // RequestGroup represents a single download task

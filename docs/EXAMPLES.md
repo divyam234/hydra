@@ -27,7 +27,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -55,7 +55,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -86,7 +86,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -118,7 +118,7 @@ import (
     "context"
     "log"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -151,7 +151,7 @@ import (
     "context"
     "log"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -177,7 +177,7 @@ import (
     "context"
     "log"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -215,7 +215,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -262,7 +262,7 @@ import (
     "log"
     "time"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -338,7 +338,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -390,7 +390,7 @@ import (
     "fmt"
     "sync"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -450,7 +450,7 @@ import (
     "context"
     "fmt"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -496,7 +496,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -545,7 +545,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -591,7 +591,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -659,7 +659,7 @@ import (
     "sync"
     "time"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 type DownloadMonitor struct {
@@ -769,7 +769,7 @@ import (
     "os/signal"
     "syscall"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -821,7 +821,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -871,7 +871,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -914,7 +914,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func downloadWithRetry(url string, maxRetries int) error {
@@ -964,7 +964,7 @@ import (
     "fmt"
     "sync"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -1028,7 +1028,7 @@ import (
     "os"
     "strings"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
@@ -1093,7 +1093,7 @@ import (
     "sync"
     "time"
 
-    "github.com/bhunter/hydra/pkg/downloader"
+    "github.com/divyam234/hydra/pkg/downloader"
 )
 
 type BatchDownloader struct {
