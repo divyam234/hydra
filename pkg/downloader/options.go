@@ -85,10 +85,17 @@ func WithConnectTimeout(seconds int) Option {
 	}
 }
 
-// WithProxy sets the proxy URL for all protocols
+// WithProxy sets the proxy URL (http, https, socks5)
 func WithProxy(url string) Option {
 	return func(c *config) {
-		c.opt.Put(option.AllProxy, url)
+		c.opt.Put(option.Proxy, url)
+	}
+}
+
+// WithNoProxy sets the domains to exclude from proxy (comma separated)
+func WithNoProxy(domains string) Option {
+	return func(c *config) {
+		c.opt.Put(option.NoProxy, domains)
 	}
 }
 
@@ -201,5 +208,47 @@ func WithPieceSelector(selector string) Option {
 func WithFileAllocation(method string) Option {
 	return func(c *config) {
 		c.opt.Put(option.FileAllocation, method)
+	}
+}
+
+// WithCheckCertificate sets whether to verify SSL/TLS certificates
+func WithCheckCertificate(check bool) Option {
+	return func(c *config) {
+		c.opt.Put(option.CheckCertificate, fmt.Sprintf("%v", check))
+	}
+}
+
+// WithForceSequential sets whether to force sequential download of multiple URIs
+func WithForceSequential(force bool) Option {
+	return func(c *config) {
+		c.opt.Put(option.ForceSequential, fmt.Sprintf("%v", force))
+	}
+}
+
+// WithQuiet sets quiet mode (suppress output)
+func WithQuiet(quiet bool) Option {
+	return func(c *config) {
+		c.opt.Put(option.Quiet, fmt.Sprintf("%v", quiet))
+	}
+}
+
+// WithAllowOverwrite sets whether to allow overwriting existing files
+func WithAllowOverwrite(allow bool) Option {
+	return func(c *config) {
+		c.opt.Put(option.AllowOverwrite, fmt.Sprintf("%v", allow))
+	}
+}
+
+// WithAutoFileRenaming sets whether to rename file if it already exists
+func WithAutoFileRenaming(auto bool) Option {
+	return func(c *config) {
+		c.opt.Put(option.AutoFileRenaming, fmt.Sprintf("%v", auto))
+	}
+}
+
+// WithLogFile sets the log file path
+func WithLogFile(path string) Option {
+	return func(c *config) {
+		c.opt.Put(option.Log, path)
 	}
 }

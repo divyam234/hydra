@@ -2,24 +2,31 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 )
 
 // Console manages output
 type Console struct {
-	mu sync.Mutex
+	mu        sync.Mutex
+	quiet     bool
+	logWriter io.Writer
 }
 
 // NewConsole creates a new Console
-func NewConsole() *Console {
-	return &Console{}
+func NewConsole(quiet bool, logWriter io.Writer) *Console {
+	return &Console{quiet: quiet, logWriter: logWriter}
 }
 
 // PrintProgress prints the progress of a download
 func (c *Console) PrintProgress(gid string, total, completed int64, speed int, numConns int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.quiet {
+		return
+	}
 
 	percent := 0
 	if total > 0 {
@@ -41,6 +48,11 @@ func (c *Console) PrintProgress(gid string, total, completed int64, speed int, n
 
 // ClearLine clears the current line
 func (c *Console) ClearLine() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.quiet {
+		return
+	}
 	fmt.Print("\r" + strings.Repeat(" ", 80) + "\r")
 }
 
@@ -48,7 +60,32 @@ func (c *Console) ClearLine() {
 func (c *Console) Printf(format string, a ...interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	fmt.Printf(format, a...)
+
+	msg := fmt.Sprintf(format, a...)
+	if c.logWriter != nil {
+		fmt.Fprint(c.logWriter, msg)
+	}
+
+	if c.quiet {
+		return
+	}
+	fmt.Print(msg)
+}
+
+// Println prints a line
+func (c *Console) Println(a ...interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	msg := fmt.Sprintln(a...)
+	if c.logWriter != nil {
+		fmt.Fprint(c.logWriter, msg)
+	}
+
+	if c.quiet {
+		return
+	}
+	fmt.Print(msg)
 }
 
 func formatSize(bytes int64) string {

@@ -1,11 +1,13 @@
 package http
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/divyam234/hydra/pkg/option"
@@ -13,20 +15,38 @@ import (
 
 // NewClient creates a new HTTP client with custom transport
 func NewClient(opt *option.Option) *http.Client {
-	// Proxy function
-	proxyFunc := http.ProxyFromEnvironment
-	if proxyURL := opt.Get(option.AllProxy); proxyURL != "" {
-		if u, err := url.Parse(proxyURL); err == nil {
-			proxyFunc = http.ProxyURL(u)
-		}
-	} else {
-		// Fallback to protocol specific (simplified)
-		// Real implementation would distinguish http vs https requests
-		if proxyURL := opt.Get(option.HttpProxy); proxyURL != "" {
-			if u, err := url.Parse(proxyURL); err == nil {
-				proxyFunc = http.ProxyURL(u)
+	// Proxy function logic
+	noProxy := opt.Get(option.NoProxy)
+	proxyStr := opt.Get(option.Proxy)
+
+	proxyFunc := func(req *http.Request) (*url.URL, error) {
+		// Check NoProxy
+		if noProxy != "" {
+			host := strings.ToLower(req.URL.Hostname())
+			for _, domain := range strings.Split(noProxy, ",") {
+				domain = strings.TrimSpace(strings.ToLower(domain))
+				if domain == "" {
+					continue
+				}
+				if domain == "*" {
+					return nil, nil
+				}
+				if host == domain || strings.HasSuffix(host, "."+domain) {
+					return nil, nil
+				}
 			}
 		}
+
+		// Single Proxy Flag
+		if proxyStr != "" {
+			if u, err := url.Parse(proxyStr); err == nil {
+				return u, nil
+			}
+			// If parsing fails, maybe log warning? For now ignore.
+		}
+
+		// Fallback to environment
+		return http.ProxyFromEnvironment(req)
 	}
 
 	// Default transport settings
@@ -35,12 +55,21 @@ func NewClient(opt *option.Option) *http.Client {
 		connectTimeout = t
 	}
 
+	// TLS Configuration
+	checkCert, err := opt.GetAsBool(option.CheckCertificate)
+	if err != nil {
+		checkCert = true // Default to safe
+	}
+
 	transport := &http.Transport{
 		Proxy: proxyFunc,
 		DialContext: (&net.Dialer{
 			Timeout:   time.Duration(connectTimeout) * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: !checkCert,
+		},
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,

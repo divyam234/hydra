@@ -245,7 +245,7 @@ func TestOption_Proxy(t *testing.T) {
 
 	opt := option.GetDefaultOptions()
 	opt.Put(option.Dir, tmpDir)
-	opt.Put(option.AllProxy, proxy.URL)
+	opt.Put(option.Proxy, proxy.URL)
 	opt.Put(option.Out, "proxy.dat")
 
 	rg := NewRequestGroup("proxy-gid", []string{target.URL}, opt)

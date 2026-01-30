@@ -197,7 +197,20 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 	// Initialize Stats
 	rg.speedCalc = stats.NewSpeedCalc()
 	if rg.console == nil {
-		rg.console = ui.NewConsole()
+		quiet, _ := rg.options.GetAsBool(option.Quiet)
+		var logWriter io.Writer
+		if logPath := rg.options.Get(option.Log); logPath != "" {
+			if logPath == "-" {
+				logWriter = os.Stdout
+			} else {
+				f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+				if err != nil {
+					return fmt.Errorf("failed to open log file: %w", err)
+				}
+				logWriter = f
+			}
+		}
+		rg.console = ui.NewConsole(quiet, logWriter)
 	}
 
 	// 2. Initialize Controller and check for resume
@@ -222,7 +235,24 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 	}
 
 	if !resumed {
-		fmt.Printf("Downloading %s to %s\n", uriStr, out)
+		// Check for file conflict
+		if _, err := os.Stat(rg.outputPath); err == nil {
+			// File exists
+			allowOverwrite, _ := rg.options.GetAsBool(option.AllowOverwrite)
+			if !allowOverwrite {
+				autoRename, _ := rg.options.GetAsBool(option.AutoFileRenaming)
+				if autoRename {
+					rg.outputPath = findNextAvailableName(rg.outputPath)
+					out = rg.outputPath // Update local var for printing
+					// Re-initialize controller for the new file
+					rg.controller = control.NewController(rg.outputPath)
+				} else {
+					return fmt.Errorf("file already exists: %s", rg.outputPath)
+				}
+			}
+		}
+
+		rg.console.Printf("Downloading %s to %s\n", uriStr, out)
 		// Get File Size (HEAD Request)
 		headReq, err := http.NewRequestWithContext(ctx, "HEAD", uriStr, nil)
 		if err != nil {
@@ -260,7 +290,7 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 			return rg.verifyChecksum()
 		}
 
-		fmt.Printf("File size: %d bytes.\n", rg.totalLength)
+		rg.console.Printf("File size: %d bytes.\n", rg.totalLength)
 	}
 
 	// 3. Initialize Segment System
@@ -285,7 +315,7 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 	if resumed {
 		if loadedCF.Bitfield != "" {
 			if err := rg.pieceStorage.GetBitfield().FromHexString(loadedCF.Bitfield); err != nil {
-				fmt.Printf("Warning: failed to restore bitfield: %v\n", err)
+				rg.console.Printf("Warning: failed to restore bitfield: %v\n", err)
 			} else {
 				// Update completedBytes based on restored bitfield
 				// We must sum the actual length of each completed piece
@@ -396,6 +426,13 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 			rg.console.PrintProgress(string(rg.gid), rg.totalLength, written, speed, maxConns)
 
 		case <-doneChan:
+			// Send final progress update
+			written := rg.completedBytes.Load()
+			if written > rg.totalLength {
+				written = rg.totalLength
+			}
+			rg.console.PrintProgress(string(rg.gid), rg.totalLength, written, 0, maxConns)
+
 			rg.console.ClearLine()
 			if !rg.segmentMan.IsAllComplete() {
 				rg.saveControlFile()
@@ -403,7 +440,7 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 			}
 			rg.console.ClearLine()
 
-			fmt.Println("Download complete.")
+			rg.console.Println("Download complete.")
 			rg.controller.Remove() // Cleanup control file on success
 
 			return rg.verifyChecksum()
@@ -421,7 +458,7 @@ func (rg *RequestGroup) saveControlFile() {
 // verifyChecksum performs checksum validation
 func (rg *RequestGroup) verifyChecksum() error {
 	if checksum := rg.options.Get(option.Checksum); checksum != "" {
-		fmt.Printf("Verifying checksum %s...\n", checksum)
+		rg.console.Printf("Verifying checksum %s...\n", checksum)
 		valid, err := util.VerifyChecksum(rg.outputPath, checksum)
 
 		rg.stateMu.Lock()
@@ -783,4 +820,16 @@ func (rg *RequestGroup) downloadSingle(ctx context.Context, uriStr string, clien
 	}
 
 	return fmt.Errorf("downloadSingle failed after %d tries: %w", maxTries, lastErr)
+}
+
+// findNextAvailableName finds the next available filename by appending a number
+func findNextAvailableName(path string) string {
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(path, ext)
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s.%d%s", base, i, ext)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
 }

@@ -255,6 +255,7 @@ func TestResume_CompleteFile(t *testing.T) {
 	opt := option.GetDefaultOptions()
 	opt.Put(option.Dir, tmpDir)
 	opt.Put(option.Out, "done.dat")
+	opt.Put(option.AllowOverwrite, "true")
 
 	// Create existing partial file with NO control file
 	os.WriteFile(filepath.Join(tmpDir, "done.dat"), []byte("partial"), 0644)
@@ -279,6 +280,7 @@ func TestResume_ServerNoLongerSupportsRange(t *testing.T) {
 	opt := option.GetDefaultOptions()
 	opt.Put(option.Dir, tmpDir)
 	opt.Put(option.Out, "file.dat")
+	opt.Put(option.AllowOverwrite, "true")
 
 	var requestCount int32
 	data := make([]byte, 1024)

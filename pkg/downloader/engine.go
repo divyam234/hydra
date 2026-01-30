@@ -274,3 +274,9 @@ func (c *callbackUI) Printf(format string, a ...interface{}) {
 		c.messageCb(fmt.Sprintf(format, a...))
 	}
 }
+
+func (c *callbackUI) Println(a ...interface{}) {
+	if c.messageCb != nil {
+		c.messageCb(fmt.Sprint(a...))
+	}
+}

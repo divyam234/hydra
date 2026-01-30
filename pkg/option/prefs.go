@@ -32,11 +32,12 @@ const (
 	NetrcPath   = "netrc-path"
 	LoadCookies = "load-cookies"
 
+	// Security
+	CheckCertificate = "check-certificate" // bool, default true
+
 	// Proxy
-	HttpProxy   = "http-proxy"
-	HttpsProxy  = "https-proxy"
-	AllProxy    = "all-proxy"
-	NoProxy     = "no-proxy"
+	Proxy       = "proxy"
+	NoProxy     = "no-proxy" // comma separated list of domains
 	ProxyMethod = "proxy-method"
 
 	// Download Options
@@ -45,6 +46,7 @@ const (
 	MaxDownloadLimit        = "max-download-limit"
 	MaxOverallDownloadLimit = "max-overall-download-limit"
 	MaxConcurrentDownloads  = "max-concurrent-downloads"
+	ForceSequential         = "force-sequential" // bool, default false
 	Continue                = "continue"
 	AutoFileRenaming        = "auto-file-renaming"
 	AllowOverwrite          = "allow-overwrite"
@@ -93,6 +95,9 @@ const (
 	DefaultAllowOverwrite         = "false"
 	DefaultPieceSelector          = "inorder"
 	DefaultFileAllocation         = "trunc"
+	DefaultCheckCertificate       = "true"
+	DefaultForceSequential        = "false"
+	DefaultQuiet                  = "false"
 )
 
 // GetDefaultOptions returns a new Option populated with default values
@@ -118,5 +123,8 @@ func GetDefaultOptions() *Option {
 	opt.Put(AllowOverwrite, DefaultAllowOverwrite)
 	opt.Put(PieceSelector, DefaultPieceSelector)
 	opt.Put(FileAllocation, DefaultFileAllocation)
+	opt.Put(CheckCertificate, DefaultCheckCertificate)
+	opt.Put(ForceSequential, DefaultForceSequential)
+	opt.Put(Quiet, DefaultQuiet)
 	return opt
 }
