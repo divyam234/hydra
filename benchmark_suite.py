@@ -28,8 +28,8 @@ def log(msg, color="RESET"):
         print(msg)
 
 
-def check_tools():
-    tools = {}
+def get_tool_paths():
+    paths = {}
     for tool in ["hydra", "aria2c", "curl", "wget"]:
         path = shutil.which(tool)
         if not path and tool == "hydra":
@@ -40,10 +40,8 @@ def check_tools():
                 path = os.path.abspath("./hydra")
 
         if path:
-            tools[tool] = path
-        else:
-            log(f"Warning: {tool} not found.", "RED")
-    return tools
+            paths[tool] = path
+    return paths
 
 
 def get_file_size_mb(url):
@@ -70,9 +68,8 @@ def cleanup(filename):
                 pass
 
 
-def run_benchmark(tool_name, tool_path, url, output_file, iterations):
-    cmd = []
-    if tool_name == "hydra":
+def build_command(tool_name, tool_path, url, output_file, connections=16):
+    if "hydra" in tool_name:
         cmd = [
             tool_path,
             "download",
@@ -81,12 +78,15 @@ def run_benchmark(tool_name, tool_path, url, output_file, iterations):
             output_file,
             "--dir",
             ".",
-            "-s",
-            "16",
             "--max-tries",
             "3",
         ]
-    elif tool_name == "aria2c":
+        if connections > 1:
+            cmd.extend(["-s", str(connections)])
+        else:
+            cmd.extend(["-s", "1"])
+        return cmd
+    elif "aria2c" in tool_name:
         cmd = [
             tool_path,
             url,
@@ -94,21 +94,25 @@ def run_benchmark(tool_name, tool_path, url, output_file, iterations):
             output_file,
             "-d",
             ".",
-            "-x",
-            "16",
-            "-s",
-            "16",
             "--file-allocation=none",
             "--allow-overwrite=true",
             "-q",
         ]
-    elif tool_name == "curl":
-        cmd = [tool_path, "-L", "-o", output_file, "-s", url]
-    elif tool_name == "wget":
-        cmd = [tool_path, "-O", output_file, "-q", url]
+        if connections > 1:
+            cmd.extend(["-x", str(connections), "-s", str(connections)])
+        else:
+            cmd.extend(["-x", "1", "-s", "1"])
+        return cmd
+    elif "curl" in tool_name:
+        return [tool_path, "-L", "-o", output_file, "-s", url]
+    elif "wget" in tool_name:
+        return [tool_path, "-O", output_file, "-q", url]
+    return []
 
+
+def run_benchmark(name, cmd, output_file, iterations):
     times = []
-    log(f"  Running {tool_name}...", "BLUE")
+    log(f"  Running {name}...", "BLUE")
 
     for i in range(iterations):
         cleanup(output_file)
@@ -119,7 +123,6 @@ def run_benchmark(tool_name, tool_path, url, output_file, iterations):
             )
             duration = time.time() - start
             times.append(duration)
-            # log(f"    Run {i+1}: {duration:.2f}s")
         except subprocess.CalledProcessError as e:
             log(f"    Run {i + 1} FAILED: {e}", "RED")
         finally:
@@ -145,10 +148,27 @@ def main():
     parser.add_argument("--skip-5gb", action="store_true", help="Skip the 5GB test")
     args = parser.parse_args()
 
-    tools = check_tools()
-    if not tools:
+    paths = get_tool_paths()
+    if not paths:
         log("No tools found! Please install hydra, aria2c, curl, or wget.", "RED")
         sys.exit(1)
+
+    # Define test cases based on available tools
+    test_cases = []
+
+    if "hydra" in paths:
+        test_cases.append({"name": "hydra (16 conn)", "tool": "hydra", "conn": 16})
+        test_cases.append({"name": "hydra (1 conn)", "tool": "hydra", "conn": 1})
+
+    if "aria2c" in paths:
+        test_cases.append({"name": "aria2c (16 conn)", "tool": "aria2c", "conn": 16})
+        test_cases.append({"name": "aria2c (1 conn)", "tool": "aria2c", "conn": 1})
+
+    if "curl" in paths:
+        test_cases.append({"name": "curl", "tool": "curl", "conn": 1})
+
+    if "wget" in paths:
+        test_cases.append({"name": "wget", "tool": "wget", "conn": 1})
 
     benchmarks = [
         {"name": "1GB File", "url": args.url_1gb},
@@ -157,13 +177,12 @@ def main():
         benchmarks.append({"name": "5GB File", "url": args.url_5gb})
 
     log(f"Starting Benchmark (Iterations: {args.iterations})", "HEADER")
-    log(f"Tools detected: {', '.join(tools.keys())}\n", "GREEN")
+    log(f"Tools detected: {', '.join(paths.keys())}\n", "GREEN")
 
     for bench in benchmarks:
         log(f"Benchmarking: {bench['name']}", "HEADER")
         log(f"URL: {bench['url']}", "BLUE")
 
-        # approximate size for speed calc
         size_mb = get_file_size_mb(bench["url"])
         if size_mb == 0:
             if "1GB" in bench["name"]:
@@ -177,30 +196,34 @@ def main():
 
         results = []
 
-        for name, path in tools.items():
-            avg_time = run_benchmark(
-                name, path, bench["url"], "test_dl.dat", args.iterations
+        for case in test_cases:
+            tool_path = paths[case["tool"]]
+            cmd = build_command(
+                case["tool"], tool_path, bench["url"], "test_dl.dat", case["conn"]
             )
+
+            avg_time = run_benchmark(case["name"], cmd, "test_dl.dat", args.iterations)
+
             if avg_time > 0:
                 speed = size_mb / avg_time
-                results.append((name, avg_time, speed))
+                results.append((case["name"], avg_time, speed))
             else:
-                results.append((name, float("inf"), 0))
+                results.append((case["name"], float("inf"), 0))
 
         # Sort by speed (descending)
         results.sort(key=lambda x: x[2], reverse=True)
 
         # Print Table
-        print("\n" + "=" * 65)
-        print(f"{'Tool':<15} | {'Avg Time':<12} | {'Speed':<15} | {'Rel Speed':<10}")
-        print("-" * 65)
+        print("\n" + "=" * 70)
+        print(f"{'Tool':<20} | {'Avg Time':<12} | {'Speed':<15} | {'Rel Speed':<10}")
+        print("-" * 70)
 
         fastest_speed = results[0][2]
 
         for name, t, speed in results:
             rel = f"{speed / fastest_speed * 100:.0f}%" if fastest_speed > 0 else "N/A"
-            print(f"{name:<15} | {t:<10.2f} s | {speed:<10.2f} MB/s | {rel:<10}")
-        print("=" * 65 + "\n")
+            print(f"{name:<20} | {t:<10.2f} s | {speed:<10.2f} MB/s | {rel:<10}")
+        print("=" * 70 + "\n")
 
     cleanup("test_dl.dat")
 
