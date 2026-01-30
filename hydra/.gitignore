@@ -1,0 +1,29 @@
+# Build artifacts
+/build/
+/dist/
+
+# Test artifacts
+coverage.out
+coverage.html
+*.test
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Hydra control files
+*.hydra
+
+# Session files
+*.session.json
+
+# Binaries
+/hydra
+*.exe
