@@ -6,6 +6,15 @@ import (
 	"sync"
 )
 
+// AllocationType defines the file allocation strategy
+type AllocationType string
+
+const (
+	AllocTrunc  AllocationType = "trunc"  // ftruncate (fast, sparse)
+	AllocFalloc AllocationType = "falloc" // fallocate (pre-allocate blocks)
+	AllocNone   AllocationType = "none"   // No pre-allocation
+)
+
 // DiskAdaptor handles file I/O
 type DiskAdaptor interface {
 	Open(path string, totalLength int64) error
@@ -15,14 +24,20 @@ type DiskAdaptor interface {
 
 // DirectDiskAdaptor writes directly to a file
 type DirectDiskAdaptor struct {
-	file *os.File
-	path string
-	mu   sync.Mutex
+	file      *os.File
+	path      string
+	allocType AllocationType
+	mu        sync.Mutex
 }
 
 // NewDirectDiskAdaptor creates a new DirectDiskAdaptor
-func NewDirectDiskAdaptor() *DirectDiskAdaptor {
-	return &DirectDiskAdaptor{}
+func NewDirectDiskAdaptor(allocType string) *DirectDiskAdaptor {
+	if allocType == "" {
+		allocType = string(AllocTrunc)
+	}
+	return &DirectDiskAdaptor{
+		allocType: AllocationType(allocType),
+	}
 }
 
 // Open opens the file and pre-allocates space if needed
@@ -39,11 +54,27 @@ func (d *DirectDiskAdaptor) Open(path string, totalLength int64) error {
 	}
 	d.file = f
 
-	// Pre-allocate space (simple truncate for now)
+	// Pre-allocate space
 	if totalLength > 0 {
-		if err := d.file.Truncate(totalLength); err != nil {
-			d.file.Close()
-			return fmt.Errorf("failed to allocate space: %w", err)
+		switch d.allocType {
+		case AllocNone:
+			// Do nothing
+		case AllocFalloc:
+			if err := fallocate(d.file, totalLength); err != nil {
+				// Fallback to truncate if fallocate fails
+				// fmt.Printf("fallocate failed: %v, falling back to truncate\n", err)
+				if err := d.file.Truncate(totalLength); err != nil {
+					d.file.Close()
+					return fmt.Errorf("failed to allocate space (fallback): %w", err)
+				}
+			}
+		case AllocTrunc:
+			fallthrough
+		default:
+			if err := d.file.Truncate(totalLength); err != nil {
+				d.file.Close()
+				return fmt.Errorf("failed to allocate space: %w", err)
+			}
 		}
 	}
 

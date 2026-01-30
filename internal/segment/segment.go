@@ -37,6 +37,32 @@ func (s *Segment) GetRemaining() int64 {
 	return s.Length - s.Written
 }
 
+// Split splits the remaining part of the segment into two.
+// It returns a new Segment representing the second half, or nil if remaining is too small.
+func (s *Segment) Split(minSize int64) *Segment {
+	remaining := s.GetRemaining()
+	if remaining <= minSize*2 {
+		return nil
+	}
+
+	splitPoint := remaining / 2
+	newLen := remaining - splitPoint
+
+	// Shrink current segment
+	s.Length -= newLen
+
+	// Create new segment starting after the current segment ends
+	// Note: Position is absolute file offset
+	newPos := s.Position + s.Length
+
+	// New segment inherits index later? No, caller must assign index.
+	// We return a partially constructed segment.
+	return &Segment{
+		Position: newPos,
+		Length:   newLen,
+	}
+}
+
 // String returns a summary of the segment
 func (s *Segment) String() string {
 	return fmt.Sprintf("Seg#%d[%d-%d](%d/%d)",

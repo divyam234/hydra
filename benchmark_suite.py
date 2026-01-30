@@ -68,7 +68,9 @@ def cleanup(filename):
                 pass
 
 
-def build_command(tool_name, tool_path, url, output_file, connections=16):
+def build_command(
+    tool_name, tool_path, url, output_file, connections=16, sel=None, alloc=None
+):
     if "hydra" in tool_name:
         cmd = [
             tool_path,
@@ -85,6 +87,12 @@ def build_command(tool_name, tool_path, url, output_file, connections=16):
             cmd.extend(["-s", str(connections)])
         else:
             cmd.extend(["-s", "1"])
+
+        if sel:
+            cmd.extend(["--piece-selector", sel])
+        if alloc:
+            cmd.extend(["--file-allocation", alloc])
+
         return cmd
     elif "aria2c" in tool_name:
         cmd = [
@@ -146,29 +154,52 @@ def main():
         "--iterations", type=int, default=3, help="Number of runs per tool"
     )
     parser.add_argument("--skip-5gb", action="store_true", help="Skip the 5GB test")
+    parser.add_argument(
+        "--find-fastest",
+        action="store_true",
+        help="Run matrix to find fastest Hydra config",
+    )
     args = parser.parse_args()
 
-    paths = get_tool_paths()
-    if not paths:
+    tools = get_tool_paths()
+    if not tools:
         log("No tools found! Please install hydra, aria2c, curl, or wget.", "RED")
         sys.exit(1)
 
     # Define test cases based on available tools
     test_cases = []
 
-    if "hydra" in paths:
-        test_cases.append({"name": "hydra (16 conn)", "tool": "hydra", "conn": 16})
-        test_cases.append({"name": "hydra (1 conn)", "tool": "hydra", "conn": 1})
+    if args.find_fastest and "hydra" in tools:
+        # Hydra Optimization Matrix
+        modes = [
+            ("inorder", "trunc"),
+            ("inorder", "falloc"),
+            ("random", "trunc"),
+            ("random", "falloc"),
+        ]
+        for sel, alloc in modes:
+            name = f"hydra ({sel}/{alloc})"
+            # We construct a custom cmd later, so we mark it special
+            test_cases.append(
+                {"name": name, "tool": "hydra", "conn": 16, "sel": sel, "alloc": alloc}
+            )
+    else:
+        # Standard Comparison
+        if "hydra" in tools:
+            test_cases.append({"name": "hydra (16 conn)", "tool": "hydra", "conn": 16})
+            test_cases.append({"name": "hydra (1 conn)", "tool": "hydra", "conn": 1})
 
-    if "aria2c" in paths:
-        test_cases.append({"name": "aria2c (16 conn)", "tool": "aria2c", "conn": 16})
-        test_cases.append({"name": "aria2c (1 conn)", "tool": "aria2c", "conn": 1})
+        if "aria2c" in tools:
+            test_cases.append(
+                {"name": "aria2c (16 conn)", "tool": "aria2c", "conn": 16}
+            )
+            test_cases.append({"name": "aria2c (1 conn)", "tool": "aria2c", "conn": 1})
 
-    if "curl" in paths:
-        test_cases.append({"name": "curl", "tool": "curl", "conn": 1})
+        if "curl" in tools:
+            test_cases.append({"name": "curl", "tool": "curl", "conn": 1})
 
-    if "wget" in paths:
-        test_cases.append({"name": "wget", "tool": "wget", "conn": 1})
+        if "wget" in tools:
+            test_cases.append({"name": "wget", "tool": "wget", "conn": 1})
 
     benchmarks = [
         {"name": "1GB File", "url": args.url_1gb},
@@ -177,7 +208,7 @@ def main():
         benchmarks.append({"name": "5GB File", "url": args.url_5gb})
 
     log(f"Starting Benchmark (Iterations: {args.iterations})", "HEADER")
-    log(f"Tools detected: {', '.join(paths.keys())}\n", "GREEN")
+    log(f"Tools detected: {', '.join(tools.keys())}\n", "GREEN")
 
     for bench in benchmarks:
         log(f"Benchmarking: {bench['name']}", "HEADER")
@@ -197,9 +228,17 @@ def main():
         results = []
 
         for case in test_cases:
-            tool_path = paths[case["tool"]]
+            tool_path = tools[case["tool"]]
+            sel = case.get("sel")
+            alloc = case.get("alloc")
             cmd = build_command(
-                case["tool"], tool_path, bench["url"], "test_dl.dat", case["conn"]
+                case["tool"],
+                tool_path,
+                bench["url"],
+                "test_dl.dat",
+                case["conn"],
+                sel,
+                alloc,
             )
 
             avg_time = run_benchmark(case["name"], cmd, "test_dl.dat", args.iterations)
@@ -211,6 +250,7 @@ def main():
                 results.append((case["name"], float("inf"), 0))
 
         # Sort by speed (descending)
+
         results.sort(key=lambda x: x[2], reverse=True)
 
         # Print Table

@@ -63,6 +63,12 @@ const (
 	Log             = "log"
 	ConsoleLogLevel = "console-log-level"
 	Quiet           = "quiet"
+
+	// PieceSelector sets the strategy for selecting pieces (inorder, random)
+	PieceSelector = "piece-selector"
+
+	// FileAllocation sets the file allocation method (none, trunc, falloc)
+	FileAllocation = "file-allocation"
 )
 
 // Default values
@@ -85,6 +91,8 @@ const (
 	DefaultContinue               = "false"
 	DefaultAutoFileRenaming       = "true"
 	DefaultAllowOverwrite         = "false"
+	DefaultPieceSelector          = "inorder"
+	DefaultFileAllocation         = "trunc"
 )
 
 // GetDefaultOptions returns a new Option populated with default values
@@ -108,5 +116,7 @@ func GetDefaultOptions() *Option {
 	opt.Put(Continue, DefaultContinue)
 	opt.Put(AutoFileRenaming, DefaultAutoFileRenaming)
 	opt.Put(AllowOverwrite, DefaultAllowOverwrite)
+	opt.Put(PieceSelector, DefaultPieceSelector)
+	opt.Put(FileAllocation, DefaultFileAllocation)
 	return opt
 }

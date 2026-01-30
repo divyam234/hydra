@@ -67,7 +67,7 @@ func NewRequestGroup(gid GID, uris []string, opt *option.Option) *RequestGroup {
 		gid:                gid,
 		uris:               uris,
 		options:            opt,
-		diskAdaptor:        disk.NewDirectDiskAdaptor(),
+		diskAdaptor:        disk.NewDirectDiskAdaptor(opt.Get(option.FileAllocation)),
 		speedCheckInterval: 30 * time.Second,
 		pauseCh:            make(chan struct{}),
 		resumeCh:           make(chan struct{}),
@@ -275,6 +275,11 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 	rg.pieceStorage = segment.NewDefaultPieceStorage(rg.totalLength, pieceLength)
 	maxPieces, _ := rg.options.GetAsInt(option.MaxPiecesPerSegment)
 	rg.segmentMan = segment.NewSegmentMan(rg.pieceStorage, maxPieces)
+
+	// Set Piece Selector
+	if sel := rg.options.Get(option.PieceSelector); sel == "random" {
+		rg.segmentMan.SetSelector(segment.NewRandomSelector())
+	}
 
 	// Restore bitfield if resumed
 	if resumed {

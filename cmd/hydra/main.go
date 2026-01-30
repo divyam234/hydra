@@ -99,6 +99,12 @@ var (
 			if maxPieces, _ := cmd.Flags().GetInt("max-pieces-per-segment"); maxPieces > 0 {
 				opts = append(opts, downloader.WithMaxPiecesPerSegment(maxPieces))
 			}
+			if sel, _ := cmd.Flags().GetString("piece-selector"); sel != "" {
+				opts = append(opts, downloader.WithPieceSelector(sel))
+			}
+			if alloc, _ := cmd.Flags().GetString("file-allocation"); alloc != "" {
+				opts = append(opts, downloader.WithFileAllocation(alloc))
+			}
 
 			eng := downloader.NewEngine(opts...)
 			defer eng.Shutdown()
@@ -152,6 +158,8 @@ func init() {
 	downloadCmd.Flags().Int("timeout", 0, "Timeout in seconds")
 	downloadCmd.Flags().Int("connect-timeout", 0, "Connect timeout in seconds")
 	downloadCmd.Flags().Int("max-pieces-per-segment", 20, "Max pieces per segment (chunk size control)")
+	downloadCmd.Flags().String("piece-selector", "inorder", "Piece selection strategy: inorder, random")
+	downloadCmd.Flags().String("file-allocation", "trunc", "File allocation method: none, trunc, falloc")
 }
 
 func main() {

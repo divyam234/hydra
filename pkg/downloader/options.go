@@ -189,3 +189,17 @@ func WithPriority(priority int) Option {
 		c.priority = priority
 	}
 }
+
+// WithPieceSelector sets the piece selection strategy (inorder, random)
+func WithPieceSelector(selector string) Option {
+	return func(c *config) {
+		c.opt.Put(option.PieceSelector, selector)
+	}
+}
+
+// WithFileAllocation sets the file allocation method (none, trunc, falloc)
+func WithFileAllocation(method string) Option {
+	return func(c *config) {
+		c.opt.Put(option.FileAllocation, method)
+	}
+}

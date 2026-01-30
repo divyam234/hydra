@@ -161,9 +161,7 @@ func (e *DownloadEngine) AddURIWithContext(ctx context.Context, uris []string, o
 
 // startDownload starts a download in a goroutine
 func (e *DownloadEngine) startDownload(ctx context.Context, rg *RequestGroup) {
-	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
+	e.wg.Go(func() {
 		defer e.onDownloadFinished(rg)
 
 		childCtx, cancel := context.WithCancel(ctx)
@@ -195,7 +193,7 @@ func (e *DownloadEngine) startDownload(ctx context.Context, rg *RequestGroup) {
 			e.fireEventWithProgress(EventComplete, rg, nil)
 		}
 		close(done)
-	}()
+	})
 }
 
 // onDownloadFinished is called when a download finishes to start next queued download
