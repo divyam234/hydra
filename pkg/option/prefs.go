@@ -20,6 +20,7 @@ const (
 	MaxIdleConns        = "max-idle-conns"
 	MaxIdleConnsPerHost = "max-idle-conns-per-host"
 	IdleConnTimeout     = "idle-conn-timeout"
+	ProgressBatchSize   = "progress-batch-size"
 
 	// HTTP Options
 	UserAgent            = "user-agent"
@@ -112,6 +113,7 @@ const (
 	DefaultMaxIdleConns        = "1000"
 	DefaultMaxIdleConnsPerHost = "32"
 	DefaultIdleConnTimeout     = "120"
+	DefaultProgressBatchSize   = "256K"
 )
 
 // GetDefaultOptions returns a new Option populated with default values
@@ -147,6 +149,7 @@ func GetDefaultOptions() *Option {
 	opt.Put(MaxIdleConns, DefaultMaxIdleConns)
 	opt.Put(MaxIdleConnsPerHost, DefaultMaxIdleConnsPerHost)
 	opt.Put(IdleConnTimeout, DefaultIdleConnTimeout)
+	opt.Put(ProgressBatchSize, DefaultProgressBatchSize)
 
 	return opt
 }

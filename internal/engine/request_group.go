@@ -645,7 +645,12 @@ func (rg *RequestGroup) downloadWorker(ctx context.Context, id int, uriStr strin
 
 				// Batch updates to reduce lock contention
 				var pendingBytes int64
-				const batchSize = 256 * 1024 // 256KB - matches buffer size for smoother progress
+				batchSize := int64(256 * 1024) // Default 256KB
+				if s := rg.options.Get(option.ProgressBatchSize); s != "" {
+					if val, err := option.ParseUnitNumber(s); err == nil && val > 0 {
+						batchSize = val
+					}
+				}
 
 				for {
 					n, readErr := reader.Read(buf)

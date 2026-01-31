@@ -287,3 +287,10 @@ func WithIdleConnTimeout(seconds int) Option {
 		c.opt.Put(option.IdleConnTimeout, fmt.Sprintf("%d", seconds))
 	}
 }
+
+// WithProgressBatchSize sets the batch size for progress updates (e.g. "256K")
+func WithProgressBatchSize(size string) Option {
+	return func(c *config) {
+		c.opt.Put(option.ProgressBatchSize, size)
+	}
+}

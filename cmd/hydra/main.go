@@ -138,6 +138,9 @@ var (
 			if ict, _ := cmd.Flags().GetInt("idle-conn-timeout"); ict > 0 {
 				opts = append(opts, downloader.WithIdleConnTimeout(ict))
 			}
+			if pbs, _ := cmd.Flags().GetString("progress-batch-size"); pbs != "" {
+				opts = append(opts, downloader.WithProgressBatchSize(pbs))
+			}
 
 			// SSL Verification
 
@@ -276,6 +279,7 @@ func init() {
 	downloadCmd.Flags().Int("max-idle-conns", 1000, "Maximum number of idle connections")
 	downloadCmd.Flags().Int("max-idle-conns-per-host", 32, "Maximum number of idle connections per host")
 	downloadCmd.Flags().Int("idle-conn-timeout", 120, "Idle connection timeout in seconds")
+	downloadCmd.Flags().String("progress-batch-size", "256K", "Batch size for progress updates (e.g. 128K, 1M)")
 }
 
 func main() {

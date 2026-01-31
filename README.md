@@ -78,7 +78,8 @@ hydra download "https://example.com/huge-dataset.tar.gz" \
   --read-buffer-size 1M \    # Increase read buffer (default 256K)
   --write-buffer-size 1M \   # Increase write buffer (default 64K)
   --max-idle-conns 2000 \    # Max idle connections (default 1000)
-  --idle-conn-timeout 60     # Close idle connections after 60s
+  --idle-conn-timeout 60 \   # Close idle connections after 60s
+  --progress-batch-size 128K # Progress update frequency (default 256K)
 ```
 
 ### Batch Download
