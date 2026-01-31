@@ -33,6 +33,7 @@ type RequestGroup struct {
 	pieceStorage       segment.PieceStorage
 	controller         *control.Controller
 	httpClient         *http.Client
+	httpTransport      *http.Transport
 	limiter            *limit.BandwidthLimiter
 	speedCalc          *stats.SpeedCalc
 	console            ui.UserInterface
@@ -138,6 +139,19 @@ func (rg *RequestGroup) SetUI(u ui.UserInterface) {
 	rg.console = u
 }
 
+// SetHTTPTransport sets the shared HTTP transport to use
+func (rg *RequestGroup) SetHTTPTransport(t *http.Transport) {
+	rg.httpTransport = t
+}
+
+// Cleanup releases resources held by the request group
+func (rg *RequestGroup) Cleanup() {
+	// If we have a dedicated transport (not shared), close idle connections
+	if rg.httpTransport == nil && rg.httpClient != nil {
+		rg.httpClient.CloseIdleConnections()
+	}
+}
+
 // Execute starts the download
 func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 	rg.stateMu.Lock()
@@ -215,7 +229,14 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 
 	// 2. Initialize Controller and check for resume
 	rg.controller = control.NewController(rg.outputPath)
-	rg.httpClient = internalhttp.NewClient(rg.options) // Initialize once here
+
+	// Initialize HTTP Client
+	if rg.httpTransport != nil {
+		rg.httpClient = internalhttp.NewClientWithTransport(rg.httpTransport, rg.options)
+	} else {
+		rg.httpClient = internalhttp.NewClient(rg.options)
+	}
+
 	var resumed bool
 	var loadedCF *control.ControlFile
 
@@ -354,11 +375,28 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 	var wg sync.WaitGroup
 	errChan := make(chan error, maxConns)
 
+	// Create context for workers that we can cancel
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+
+	// Ensure we wait for workers to finish before closing resources
+	// This must be deferred BEFORE diskAdaptor.Close() so it runs AFTER workers are done
+	// (defer runs in LIFO order, so this block runs FIRST, then diskAdaptor.Close())
+	doneChan := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneChan)
+	}()
+
+	defer func() {
+		cancelWorkers()
+		<-doneChan
+	}()
+
 	for i := 0; i < maxConns; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			if err := rg.downloadWorker(ctx, workerID, uriStr); err != nil {
+			if err := rg.downloadWorker(workerCtx, workerID, uriStr); err != nil {
 				errChan <- err
 			}
 		}(i)
@@ -372,13 +410,6 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 	statsTicker := time.NewTicker(1 * time.Second) // Stats every 1s
 	defer ticker.Stop()
 	defer statsTicker.Stop()
-
-	// Wait for completion or error
-	doneChan := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(doneChan)
-	}()
 
 	for {
 		select {

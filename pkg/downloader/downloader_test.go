@@ -112,7 +112,9 @@ func TestDownload_ContextCancellation(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	// Large content to ensure we can catch it in progress
-	content := make([]byte, 1024*1024) // 1MB
+	// Note: Burst size is 256KB per connection. With 5 connections, that's 1.25MB burst.
+	// We need a file significantly larger than that to ensure throttling kicks in.
+	content := make([]byte, 10*1024*1024) // 10MB
 	server := setupTestServer(t, content)
 	defer server.Close()
 
@@ -122,7 +124,7 @@ func TestDownload_ContextCancellation(t *testing.T) {
 	// Limit speed to ensure it takes long enough to be canceled
 	_, err := Download(ctx, server.URL,
 		WithDir(tmpDir),
-		WithMaxSpeed("100K"), // 100KB/s -> ~10s for 1MB
+		WithMaxSpeed("100K"), // 100KB/s -> ~100s for 10MB
 	)
 	if err == nil {
 		t.Error("Expected error due to cancellation, got nil")

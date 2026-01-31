@@ -3,9 +3,11 @@ package engine
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"sync"
 
+	internalhttp "github.com/divyam234/hydra/internal/http"
 	"github.com/divyam234/hydra/internal/ui"
 	"github.com/divyam234/hydra/pkg/option"
 )
@@ -45,6 +47,9 @@ type DownloadEngine struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	ui            ui.UserInterface
+
+	// Shared resources
+	sharedTransport *http.Transport
 
 	// Queue management
 	maxConcurrent int             // 0 = unlimited
@@ -88,12 +93,13 @@ func WithEventCallback(cb EventCallback) EngineOption {
 func NewDownloadEngine(opt *option.Option, opts ...EngineOption) *DownloadEngine {
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &DownloadEngine{
-		options:       opt,
-		requestGroups: make(map[GID]*RequestGroup),
-		gidGen:        NewGidGenerator(),
-		ctx:           ctx,
-		cancel:        cancel,
-		pendingQueue:  make([]*RequestGroup, 0),
+		options:         opt,
+		requestGroups:   make(map[GID]*RequestGroup),
+		gidGen:          NewGidGenerator(),
+		ctx:             ctx,
+		cancel:          cancel,
+		pendingQueue:    make([]*RequestGroup, 0),
+		sharedTransport: internalhttp.NewTransport(opt),
 	}
 	e.queueCond = sync.NewCond(&e.queueMu)
 
@@ -121,6 +127,9 @@ func (e *DownloadEngine) AddURIWithPriority(ctx context.Context, uris []string, 
 
 	rg := NewRequestGroup(gid, uris, opt)
 	rg.priority = priority
+
+	// Use shared transport
+	rg.SetHTTPTransport(e.sharedTransport)
 
 	// Prioritize custom UI, fall back to engine UI
 	if customUI != nil {
@@ -199,7 +208,6 @@ func (e *DownloadEngine) startDownload(ctx context.Context, rg *RequestGroup) {
 // onDownloadFinished is called when a download finishes to start next queued download
 func (e *DownloadEngine) onDownloadFinished(rg *RequestGroup) {
 	e.queueMu.Lock()
-	defer e.queueMu.Unlock()
 
 	e.activeCount--
 
@@ -210,6 +218,10 @@ func (e *DownloadEngine) onDownloadFinished(rg *RequestGroup) {
 		e.activeCount++
 		e.startDownload(context.Background(), next)
 	}
+	e.queueMu.Unlock()
+
+	// Cleanup resources
+	rg.Cleanup()
 
 	// Save session if configured
 	if e.sessionManager != nil {
@@ -272,6 +284,10 @@ func (e *DownloadEngine) Shutdown() {
 
 	e.cancel()
 	e.wg.Wait()
+
+	if e.sharedTransport != nil {
+		e.sharedTransport.CloseIdleConnections()
+	}
 }
 
 // Run waits for all downloads to complete and returns any errors encountered

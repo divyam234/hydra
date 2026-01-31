@@ -13,8 +13,8 @@ import (
 	"github.com/divyam234/hydra/pkg/option"
 )
 
-// NewClient creates a new HTTP client with custom transport
-func NewClient(opt *option.Option) *http.Client {
+// NewTransport creates a new HTTP transport with custom settings
+func NewTransport(opt *option.Option) *http.Transport {
 	// Proxy function logic
 	noProxy := opt.Get(option.NoProxy)
 	proxyStr := opt.Get(option.Proxy)
@@ -122,6 +122,16 @@ func NewClient(opt *option.Option) *http.Client {
 	keepAlive, _ := opt.GetAsBool(option.EnableHttpKeepAlive)
 	transport.DisableKeepAlives = !keepAlive
 
+	return transport
+}
+
+// NewClient creates a new HTTP client with custom transport
+func NewClient(opt *option.Option) *http.Client {
+	return NewClientWithTransport(NewTransport(opt), opt)
+}
+
+// NewClientWithTransport creates a new HTTP client using an existing transport
+func NewClientWithTransport(transport *http.Transport, opt *option.Option) *http.Client {
 	timeout := 60
 	if t, _ := opt.GetAsInt(option.Timeout); t > 0 {
 		timeout = t

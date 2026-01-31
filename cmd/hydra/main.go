@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
+
 	"strings"
 	"syscall"
 
@@ -140,6 +143,16 @@ var (
 			}
 			if pbs, _ := cmd.Flags().GetString("progress-batch-size"); pbs != "" {
 				opts = append(opts, downloader.WithProgressBatchSize(pbs))
+			}
+
+			// Enable pprof if requested
+			if pprofAddr, _ := cmd.Flags().GetString("pprof-addr"); pprofAddr != "" {
+				go func() {
+					fmt.Printf("Starting pprof server on %s\n", pprofAddr)
+					if err := http.ListenAndServe(pprofAddr, nil); err != nil {
+						fmt.Printf("pprof server failed: %v\n", err)
+					}
+				}()
 			}
 
 			// SSL Verification
@@ -280,6 +293,7 @@ func init() {
 	downloadCmd.Flags().Int("max-idle-conns-per-host", 32, "Maximum number of idle connections per host")
 	downloadCmd.Flags().Int("idle-conn-timeout", 120, "Idle connection timeout in seconds")
 	downloadCmd.Flags().String("progress-batch-size", "256K", "Batch size for progress updates (e.g. 128K, 1M)")
+	downloadCmd.Flags().String("pprof-addr", "", "Enable pprof server (e.g. :6060)")
 }
 
 func main() {
