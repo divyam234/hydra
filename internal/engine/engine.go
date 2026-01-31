@@ -191,14 +191,22 @@ func (e *DownloadEngine) startDownload(ctx context.Context, rg *RequestGroup) {
 		e.fireEventWithProgress(EventStart, rg, nil)
 
 		if err := rg.Execute(childCtx); err != nil {
-			fmt.Printf("Download %s failed: %v\n", rg.gid, err)
+			if e.ui != nil {
+				e.ui.Printf("Download %s failed: %v\n", rg.gid, err)
+			} else {
+				fmt.Printf("Download %s failed: %v\n", rg.gid, err)
+			}
 			if rg.IsCancelled() {
 				e.fireEventWithProgress(EventCancel, rg, nil)
 			} else {
 				e.fireEventWithProgress(EventError, rg, err)
 			}
 		} else {
-			fmt.Printf("Download %s completed\n", rg.gid)
+			if e.ui != nil {
+				e.ui.Printf("Download %s completed\n", rg.gid)
+			} else {
+				fmt.Printf("Download %s completed\n", rg.gid)
+			}
 			e.fireEventWithProgress(EventComplete, rg, nil)
 		}
 		close(done)

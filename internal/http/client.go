@@ -132,9 +132,11 @@ func NewClient(opt *option.Option) *http.Client {
 
 // NewClientWithTransport creates a new HTTP client using an existing transport
 func NewClientWithTransport(transport *http.Transport, opt *option.Option) *http.Client {
-	timeout := 60
+	// Timeout of 0 means no timeout - appropriate for large file downloads
+	// We rely on connect timeout, TLS handshake timeout, and context cancellation instead
+	var timeout time.Duration
 	if t, _ := opt.GetAsInt(option.Timeout); t > 0 {
-		timeout = t
+		timeout = time.Duration(t) * time.Second
 	}
 
 	// Load cookies
@@ -153,7 +155,7 @@ func NewClientWithTransport(transport *http.Transport, opt *option.Option) *http
 
 	return &http.Client{
 		Transport: transport,
-		Timeout:   time.Duration(timeout) * time.Second,
+		Timeout:   timeout,
 		Jar:       jar,
 	}
 }

@@ -280,3 +280,14 @@ func (c *callbackUI) Println(a ...interface{}) {
 		c.messageCb(fmt.Sprint(a...))
 	}
 }
+
+// DownloadTracker interface methods (no-op for callback UI)
+func (c *callbackUI) RegisterDownload(gid string, filename string, total int64) {}
+func (c *callbackUI) MarkComplete(gid string)                                   {}
+func (c *callbackUI) MarkFailed(gid string, err error)                          {}
+func (c *callbackUI) Stop()                                                     {}
+
+// SetUI sets a custom user interface for the engine
+func (e *Engine) SetUI(u ui.UserInterface) {
+	e.internal.SetUI(u)
+}

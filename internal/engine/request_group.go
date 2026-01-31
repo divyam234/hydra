@@ -166,9 +166,17 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 		// Don't override cancelled state
 		if currentState == RGStateCancelled {
 			rg.lastError = fmt.Errorf("download cancelled")
+			// Mark cancelled in rich UI
+			if tracker, ok := rg.console.(ui.DownloadTracker); ok {
+				tracker.MarkFailed(string(rg.gid), rg.lastError)
+			}
 		} else if err != nil {
 			rg.state.Store(RGStateError)
 			rg.lastError = err
+			// Mark failed in rich UI
+			if tracker, ok := rg.console.(ui.DownloadTracker); ok {
+				tracker.MarkFailed(string(rg.gid), err)
+			}
 		} else {
 			rg.state.Store(RGStateComplete)
 		}
@@ -249,6 +257,11 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 				resumed = true
 				rg.totalLength = loadedCF.TotalLength
 				// fmt.Printf("Resuming download of %s (Size: %d)\n", out, rg.totalLength)
+
+				// Register resumed download with rich UI
+				if tracker, ok := rg.console.(ui.DownloadTracker); ok {
+					tracker.RegisterDownload(string(rg.gid), filepath.Base(rg.outputPath), rg.totalLength)
+				}
 			}
 		} else {
 			// fmt.Printf("Failed to load control file: %v. Starting fresh.\n", err)
@@ -273,7 +286,11 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 			}
 		}
 
-		rg.console.Printf("Downloading %s to %s\n", uriStr, out)
+		// Register with rich UI if available
+		if tracker, ok := rg.console.(ui.DownloadTracker); ok {
+			tracker.RegisterDownload(string(rg.gid), filepath.Base(out), 0)
+		}
+
 		// Get File Size (HEAD Request)
 		headReq, err := http.NewRequestWithContext(ctx, "HEAD", uriStr, nil)
 		if err != nil {
@@ -311,7 +328,10 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 			return rg.verifyChecksum()
 		}
 
-		rg.console.Printf("File size: %d bytes.\n", rg.totalLength)
+		// Update total size in rich UI
+		if tracker, ok := rg.console.(ui.DownloadTracker); ok {
+			tracker.RegisterDownload(string(rg.gid), filepath.Base(rg.outputPath), rg.totalLength)
+		}
 	}
 
 	// 3. Initialize Segment System
@@ -336,20 +356,20 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 	if resumed {
 		if loadedCF.Bitfield != "" {
 			if err := rg.pieceStorage.GetBitfield().FromHexString(loadedCF.Bitfield); err != nil {
-				rg.console.Printf("Warning: failed to restore bitfield: %v\n", err)
-			} else {
-				// Update completedBytes based on restored bitfield
-				// We must sum the actual length of each completed piece
-				// because the last piece might be shorter than pieceLength
-				restoredBytes := int64(0)
-				for i := 0; i < rg.pieceStorage.GetNumPieces(); i++ {
-					if rg.pieceStorage.HasPiece(i) {
-						restoredBytes += rg.pieceStorage.GetPiece(i).Length
-					}
-				}
-				rg.completedBytes.Store(restoredBytes)
+				// Warning: failed to restore bitfield, starting fresh
 			}
 		}
+
+		// Update completedBytes based on restored bitfield
+		// We must sum the actual length of each completed piece
+		// because the last piece might be shorter than pieceLength
+		restoredBytes := int64(0)
+		for i := 0; i < rg.pieceStorage.GetNumPieces(); i++ {
+			if rg.pieceStorage.HasPiece(i) {
+				restoredBytes += rg.pieceStorage.GetPiece(i).Length
+			}
+		}
+		rg.completedBytes.Store(restoredBytes)
 	} else {
 		// Save initial control file for fresh downloads
 		// But only after we have totalLength
@@ -390,6 +410,10 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 	defer func() {
 		cancelWorkers()
 		<-doneChan
+		// Save control file after workers are done to capture final progress
+		if rg.totalLength > 0 && rg.pieceStorage != nil {
+			rg.saveControlFile()
+		}
 	}()
 
 	for i := 0; i < maxConns; i++ {
@@ -406,7 +430,7 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 	rg.saveControlFile()
 
 	// Auto-save and Stats ticker
-	ticker := time.NewTicker(30 * time.Second)     // Auto-save every 30s
+	ticker := time.NewTicker(5 * time.Second)      // Auto-save every 5s
 	statsTicker := time.NewTicker(1 * time.Second) // Stats every 1s
 	defer ticker.Stop()
 	defer statsTicker.Stop()
@@ -429,11 +453,7 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 				return ctx.Err()
 			}
 		case <-ctx.Done():
-			// Don't save if it was a cancellation during initialization?
-			// Actually we want to save what we have.
-			if rg.totalLength > 0 {
-				rg.saveControlFile()
-			}
+			// Save will happen in deferred function after workers finish
 			return ctx.Err()
 		case err := <-errChan:
 			rg.saveControlFile()
@@ -457,6 +477,14 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 			rg.console.PrintProgress(string(rg.gid), rg.totalLength, written, speed, maxConns)
 
 		case <-doneChan:
+			// Check if any errors occurred during download
+			select {
+			case err := <-errChan:
+				rg.saveControlFile()
+				return err
+			default:
+			}
+
 			// Send final progress update
 			written := rg.completedBytes.Load()
 			if written > rg.totalLength {
@@ -464,14 +492,17 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 			}
 			rg.console.PrintProgress(string(rg.gid), rg.totalLength, written, 0, maxConns)
 
-			rg.console.ClearLine()
 			if !rg.segmentMan.IsAllComplete() {
 				rg.saveControlFile()
-				return fmt.Errorf("download incomplete")
+				return fmt.Errorf("download incomplete: %d/%d pieces finished",
+					rg.pieceStorage.GetBitfield().CountSetBit(), rg.pieceStorage.GetNumPieces())
 			}
-			rg.console.ClearLine()
 
-			rg.console.Println("Download complete.")
+			// Mark complete in rich UI
+			if tracker, ok := rg.console.(ui.DownloadTracker); ok {
+				tracker.MarkComplete(string(rg.gid))
+			}
+
 			rg.controller.Remove() // Cleanup control file on success
 
 			return rg.verifyChecksum()
@@ -480,6 +511,9 @@ func (rg *RequestGroup) Execute(ctx context.Context) (err error) {
 }
 
 func (rg *RequestGroup) saveControlFile() {
+	if rg.pieceStorage == nil || rg.controller == nil {
+		return
+	}
 	err := rg.controller.Save(string(rg.gid), rg.pieceStorage, rg.uris, rg.outputPath)
 	if err != nil {
 		// fmt.Printf("Failed to save control file: %v\n", err)
@@ -489,7 +523,6 @@ func (rg *RequestGroup) saveControlFile() {
 // verifyChecksum performs checksum validation
 func (rg *RequestGroup) verifyChecksum() error {
 	if checksum := rg.options.Get(option.Checksum); checksum != "" {
-		rg.console.Printf("Verifying checksum %s...\n", checksum)
 		valid, err := util.VerifyChecksum(rg.outputPath, checksum)
 
 		rg.stateMu.Lock()
@@ -498,12 +531,8 @@ func (rg *RequestGroup) verifyChecksum() error {
 		rg.stateMu.Unlock()
 
 		if err != nil {
-			fmt.Printf("Checksum verification failed: %v\n", err)
 			return fmt.Errorf("checksum verification error: %w", err)
-		} else if valid {
-			fmt.Println("Checksum OK")
-		} else {
-			fmt.Println("Checksum FAILED")
+		} else if !valid {
 			return fmt.Errorf("checksum failed")
 		}
 	}

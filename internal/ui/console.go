@@ -100,3 +100,15 @@ func formatSize(bytes int64) string {
 	}
 	return fmt.Sprintf("%.1f%ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
+
+// RegisterDownload implements DownloadTracker (no-op for basic console)
+func (c *Console) RegisterDownload(gid string, filename string, total int64) {}
+
+// MarkComplete implements DownloadTracker (no-op for basic console)
+func (c *Console) MarkComplete(gid string) {}
+
+// MarkFailed implements DownloadTracker (no-op for basic console)
+func (c *Console) MarkFailed(gid string, err error) {}
+
+// Stop implements DownloadTracker (no-op for basic console)
+func (c *Console) Stop() {}

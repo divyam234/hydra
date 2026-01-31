@@ -83,14 +83,14 @@ const (
 
 // Default values
 const (
-	DefaultTimeout                = "30"
+	DefaultTimeout                = "0" // 0 = no timeout, appropriate for large downloads
 	DefaultConnectTimeout         = "15"
 	DefaultMaxTries               = "5"
 	DefaultRetryWait              = "0"
 	DefaultMaxConnPerServer       = "1"
 	DefaultSplit                  = "5"
 	DefaultMinSplitSize           = "20M"
-	DefaultMaxPiecesPerSegment    = "20"
+	DefaultMaxPiecesPerSegment    = "1"
 	DefaultUserAgent              = "hydra/0.1.0"
 	DefaultEnableHttpKeepAlive    = "true"
 	DefaultEnableHttpPipelining   = "false"

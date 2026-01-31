@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -382,5 +383,139 @@ func TestResume_BitfieldCorruption(t *testing.T) {
 	content, _ := os.ReadFile(filepath.Join(tmpDir, "file.dat"))
 	if string(content) != string(data) {
 		t.Error("Download failed with corrupted bitfield")
+	}
+}
+
+// TestResume_InterruptAndResume tests that a download interrupted mid-way
+// can be resumed and only downloads the remaining pieces
+func TestResume_InterruptAndResume(t *testing.T) {
+	// Create a file with multiple pieces
+	// Piece size is 1MB for files < 50MB, so use 4MB = 4 pieces
+	data := make([]byte, 4*1024*1024)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	var bytesServedPhase1 atomic.Int64
+	var bytesServedPhase2 atomic.Int64
+	var phase atomic.Int32
+	phase.Store(1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Accept-Ranges", "bytes")
+
+		if r.Method == "HEAD" {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		rangeHeader := r.Header.Get("Range")
+		var start, end int64
+		if rangeHeader == "" {
+			start = 0
+			end = int64(len(data)) - 1
+		} else {
+			_, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
+			if err != nil {
+				fmt.Sscanf(rangeHeader, "bytes=%d-", &start)
+				end = int64(len(data)) - 1
+			}
+		}
+		if end >= int64(len(data)) {
+			end = int64(len(data)) - 1
+		}
+
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
+		w.WriteHeader(http.StatusPartialContent)
+
+		if phase.Load() == 1 {
+			bytesServedPhase1.Add(end - start + 1)
+			// Send data with delay to allow interruption
+			chunkSize := int64(64 * 1024) // 64KB chunks
+			for pos := start; pos <= end; pos += chunkSize {
+				chunkEnd := pos + chunkSize - 1
+				if chunkEnd > end {
+					chunkEnd = end
+				}
+				w.Write(data[pos : chunkEnd+1])
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		} else {
+			bytesServedPhase2.Add(end - start + 1)
+			w.Write(data[start : end+1])
+		}
+	}))
+	defer server.Close()
+
+	tmpDir, _ := os.MkdirTemp("", "hydra_interrupt_resume")
+	defer os.RemoveAll(tmpDir)
+
+	opt := option.GetDefaultOptions()
+	opt.Put(option.Dir, tmpDir)
+	opt.Put(option.Out, "large.dat")
+	opt.Put(option.Split, "2")
+	opt.Put(option.FileAllocation, "none")
+
+	// Phase 1: Start download and cancel after ~2MB downloaded
+	ctx, cancel := context.WithCancel(context.Background())
+	rg1 := NewRequestGroup("gid-interrupt", []string{server.URL}, opt)
+
+	go func() {
+		// Wait until we've downloaded at least 2.5MB (more than 2 full pieces)
+		for bytesServedPhase1.Load() < int64(2.5*1024*1024) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		time.Sleep(200 * time.Millisecond) // Let pieces complete and be written
+		cancel()
+	}()
+
+	err := rg1.Execute(ctx)
+	t.Logf("Phase 1 result: %v", err)
+	t.Logf("Phase 1: served %d bytes", bytesServedPhase1.Load())
+
+	// Verify control file exists
+	controlPath := filepath.Join(tmpDir, "large.dat.hydra")
+	if _, err := os.Stat(controlPath); os.IsNotExist(err) {
+		t.Fatal("Control file should exist after interruption")
+	}
+
+	// Check what's in the control file
+	controlData, _ := os.ReadFile(controlPath)
+	t.Logf("Control file: %s", string(controlData))
+
+	// The bitfield should show some pieces complete
+	if !strings.Contains(string(controlData), "bitfield") {
+		t.Error("Control file should contain bitfield")
+	}
+
+	// Phase 2: Resume
+	phase.Store(2)
+	rg2 := NewRequestGroup("gid-interrupt", []string{server.URL}, opt)
+	err = rg2.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Phase 2 failed: %v", err)
+	}
+
+	phase2Bytes := bytesServedPhase2.Load()
+	t.Logf("Phase 2: served %d bytes", phase2Bytes)
+
+	// Verify file is complete and correct
+	content, _ := os.ReadFile(filepath.Join(tmpDir, "large.dat"))
+	if len(content) != len(data) {
+		t.Fatalf("Expected %d bytes, got %d", len(data), len(content))
+	}
+
+	// Phase 2 should have downloaded LESS than the full file if resume works
+	totalFileSize := int64(len(data))
+	if phase2Bytes >= totalFileSize {
+		t.Errorf("Resume failed: Phase 2 downloaded %d bytes, should be less than %d",
+			phase2Bytes, totalFileSize)
+	} else {
+		t.Logf("Resume success: saved %.1f%%", float64(totalFileSize-phase2Bytes)/float64(totalFileSize)*100)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/divyam234/hydra/internal/ui"
 	"github.com/divyam234/hydra/pkg/downloader"
 	"github.com/spf13/cobra"
 )
@@ -165,7 +167,44 @@ var (
 			opts = append(opts, downloader.WithCheckCertificate(checkCert))
 
 			eng := downloader.NewEngine(opts...)
-			defer eng.Shutdown()
+
+			// Setup rich progress UI
+			quiet, _ := cmd.Flags().GetBool("quiet")
+			progressStyle, _ := cmd.Flags().GetString("progress")
+
+			var logWriter io.Writer
+			if logFile, _ := cmd.Flags().GetString("log"); logFile != "" {
+				if logFile == "-" {
+					logWriter = os.Stdout
+				} else {
+					f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+					if err == nil {
+						logWriter = f
+						defer f.Close()
+					}
+				}
+			}
+
+			// Determine UI style
+			var uiStyle ui.UIStyle
+			switch progressStyle {
+			case "rich":
+				uiStyle = ui.UIStyleRich
+			case "simple":
+				uiStyle = ui.UIStyleSimple
+			default:
+				uiStyle = ui.UIStyleAuto
+			}
+
+			progressUI := ui.NewUI(uiStyle, quiet, logWriter)
+			eng.SetUI(progressUI)
+
+			defer func() {
+				if tracker, ok := progressUI.(ui.DownloadTracker); ok {
+					tracker.Stop()
+				}
+				eng.Shutdown()
+			}()
 
 			// Setup signal handling
 			sigs := make(chan os.Signal, 1)
@@ -271,9 +310,8 @@ func init() {
 	downloadCmd.Flags().String("no-proxy", "", "Comma separated list of domains to ignore proxy")
 	downloadCmd.Flags().Int("timeout", 0, "Timeout in seconds")
 	downloadCmd.Flags().Int("connect-timeout", 0, "Connect timeout in seconds")
-	downloadCmd.Flags().Int("max-pieces-per-segment", 20, "Max pieces per segment (chunk size control)")
 	downloadCmd.Flags().String("piece-selector", "inorder", "Piece selection strategy: inorder, random")
-	downloadCmd.Flags().String("file-allocation", "trunc", "File allocation method: none, trunc, falloc")
+	downloadCmd.Flags().String("file-allocation", "falloc", "File allocation method: none, trunc, falloc")
 
 	// New Flags
 	downloadCmd.Flags().BoolP("check-certificate", "V", true, "Verify SSL/TLS certificates")
@@ -285,6 +323,9 @@ func init() {
 	downloadCmd.Flags().Bool("allow-overwrite", false, "Restart download from scratch if the corresponding control file doesn't exist")
 	downloadCmd.Flags().Bool("auto-file-renaming", true, "Rename file if the same file already exists")
 	downloadCmd.Flags().StringP("log", "l", "", "The file name of the log file. If - is specified, log to stdout.")
+
+	// Progress Display
+	downloadCmd.Flags().String("progress", "auto", "Progress display style: auto, rich, simple")
 
 	// Network Tuning Flags
 	downloadCmd.Flags().String("read-buffer-size", "256K", "Size of the read buffer (e.g. 256K, 1M)")
