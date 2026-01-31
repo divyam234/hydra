@@ -110,7 +110,7 @@ const (
 	// Network Tuning Defaults
 	DefaultReadBufferSize      = "256K"
 	DefaultWriteBufferSize     = "64K"
-	DefaultMaxIdleConns        = "1000"
+	DefaultMaxIdleConns        = "100"
 	DefaultMaxIdleConnsPerHost = "32"
 	DefaultIdleConnTimeout     = "120"
 	DefaultProgressBatchSize   = "256K"
