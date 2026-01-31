@@ -122,6 +122,23 @@ var (
 				opts = append(opts, downloader.WithLogFile(logFile))
 			}
 
+			// Network Tuning Options
+			if rbs, _ := cmd.Flags().GetString("read-buffer-size"); rbs != "" {
+				opts = append(opts, downloader.WithReadBufferSize(rbs))
+			}
+			if wbs, _ := cmd.Flags().GetString("write-buffer-size"); wbs != "" {
+				opts = append(opts, downloader.WithWriteBufferSize(wbs))
+			}
+			if mic, _ := cmd.Flags().GetInt("max-idle-conns"); mic > 0 {
+				opts = append(opts, downloader.WithMaxIdleConns(mic))
+			}
+			if micph, _ := cmd.Flags().GetInt("max-idle-conns-per-host"); micph > 0 {
+				opts = append(opts, downloader.WithMaxIdleConnsPerHost(micph))
+			}
+			if ict, _ := cmd.Flags().GetInt("idle-conn-timeout"); ict > 0 {
+				opts = append(opts, downloader.WithIdleConnTimeout(ict))
+			}
+
 			// SSL Verification
 
 			checkCert, _ := cmd.Flags().GetBool("check-certificate")
@@ -252,6 +269,13 @@ func init() {
 	downloadCmd.Flags().Bool("allow-overwrite", false, "Restart download from scratch if the corresponding control file doesn't exist")
 	downloadCmd.Flags().Bool("auto-file-renaming", true, "Rename file if the same file already exists")
 	downloadCmd.Flags().StringP("log", "l", "", "The file name of the log file. If - is specified, log to stdout.")
+
+	// Network Tuning Flags
+	downloadCmd.Flags().String("read-buffer-size", "256K", "Size of the read buffer (e.g. 256K, 1M)")
+	downloadCmd.Flags().String("write-buffer-size", "64K", "Size of the write buffer (e.g. 64K, 1M)")
+	downloadCmd.Flags().Int("max-idle-conns", 1000, "Maximum number of idle connections")
+	downloadCmd.Flags().Int("max-idle-conns-per-host", 32, "Maximum number of idle connections per host")
+	downloadCmd.Flags().Int("idle-conn-timeout", 120, "Idle connection timeout in seconds")
 }
 
 func main() {

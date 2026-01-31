@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
+
+	"github.com/divyam234/hydra/internal/util"
 )
 
 // AllocationType defines the file allocation strategy
@@ -78,6 +81,9 @@ func (d *DirectDiskAdaptor) Open(path string, totalLength int64) error {
 		}
 	}
 
+	// Apply OS-specific optimizations (e.g., FADV_SEQUENTIAL on Linux)
+	ApplyDiskOptimizations(d.file)
+
 	return nil
 }
 
@@ -95,6 +101,102 @@ func (d *DirectDiskAdaptor) Close() error {
 	defer d.mu.Unlock()
 	if d.file != nil {
 		return d.file.Close()
+	}
+	return nil
+}
+
+// BufferedDiskAdaptor writes to file asynchronously
+type BufferedDiskAdaptor struct {
+	adaptor *DirectDiskAdaptor
+	writeCh chan writeRequest
+	errorCh chan error
+	wg      sync.WaitGroup
+	closed  atomic.Bool
+}
+
+type writeRequest struct {
+	data   []byte
+	offset int64
+}
+
+// NewBufferedDiskAdaptor creates a new BufferedDiskAdaptor
+func NewBufferedDiskAdaptor(allocType string) *BufferedDiskAdaptor {
+	return &BufferedDiskAdaptor{
+		adaptor: NewDirectDiskAdaptor(allocType),
+		writeCh: make(chan writeRequest, 64), // Buffer 64 chunks (approx 16MB with 256KB chunks)
+		errorCh: make(chan error, 1),
+	}
+}
+
+func (b *BufferedDiskAdaptor) Open(path string, totalLength int64) error {
+	if err := b.adaptor.Open(path, totalLength); err != nil {
+		return err
+	}
+
+	b.wg.Add(1)
+	go b.writerLoop()
+	return nil
+}
+
+func (b *BufferedDiskAdaptor) writerLoop() {
+	defer b.wg.Done()
+	for req := range b.writeCh {
+		_, err := b.adaptor.WriteAt(req.data, req.offset)
+		if err != nil {
+			select {
+			case b.errorCh <- err:
+			default:
+			}
+		}
+		// Return buffer to pool
+		util.PutBuffer(req.data)
+	}
+}
+
+func (b *BufferedDiskAdaptor) WriteAt(p []byte, off int64) (int, error) {
+	if b.closed.Load() {
+		return 0, fmt.Errorf("file closed")
+	}
+
+	select {
+	case err := <-b.errorCh:
+		return 0, err
+	default:
+	}
+
+	// Copy data to ensure safety as p is reused by caller.
+	// Use buffer pool to reduce GC pressure.
+	var dataCopy []byte
+	if len(p) <= util.DefaultBufferSize {
+		dataCopy = util.GetBuffer()
+	} else {
+		// Fallback for unusually large chunks
+		dataCopy = make([]byte, len(p))
+	}
+
+	copy(dataCopy, p)
+	// Slice to actual length
+	toQueue := dataCopy[:len(p)]
+
+	b.writeCh <- writeRequest{data: toQueue, offset: off}
+
+	return len(p), nil
+}
+
+func (b *BufferedDiskAdaptor) Close() error {
+	if b.closed.CompareAndSwap(false, true) {
+		close(b.writeCh)
+		b.wg.Wait()
+
+		// Check for any final errors
+		select {
+		case err := <-b.errorCh:
+			b.adaptor.Close()
+			return err
+		default:
+		}
+
+		return b.adaptor.Close()
 	}
 	return nil
 }

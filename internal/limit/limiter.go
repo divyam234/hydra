@@ -19,9 +19,13 @@ func NewBandwidthLimiter(limit int) *BandwidthLimiter {
 	}
 	// Burst size approx 1 second worth of data or fixed reasonable size
 	burst := limit
-	if burst > 256*1024 {
+	// Ensure burst is at least 256KB to accommodate larger read buffers (util.DefaultBufferSize)
+	if burst < 256*1024 {
 		burst = 256 * 1024
 	}
+	// Note: We don't cap burst anymore to prevent throttling on every read for high-speed downloads,
+	// allowing 256KB chunks to pass through.
+
 	return &BandwidthLimiter{
 		limiter: rate.NewLimiter(rate.Limit(limit), burst),
 	}

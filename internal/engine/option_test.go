@@ -14,12 +14,12 @@ import (
 )
 
 func TestOption_RateLimiting(t *testing.T) {
-	// 500KB file to overcome burst token bucket effect
-	// Limiter burst is set to limit size (50KB), so first 50KB is instant.
-	// Remaining 450KB should take ~9s at 50KB/s.
-	data := make([]byte, 500*1024)
+	// 1MB file to overcome burst token bucket effect (now 256KB burst)
+	// Limiter burst is set to 256KB, so first 256KB is instant.
+	// Remaining 768KB should take ~15s at 50KB/s.
+	data := make([]byte, 1024*1024)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "512000")
+		w.Header().Set("Content-Length", "1048576")
 		w.Write(data)
 	}))
 	defer server.Close()

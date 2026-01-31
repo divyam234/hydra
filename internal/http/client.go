@@ -55,6 +55,36 @@ func NewClient(opt *option.Option) *http.Client {
 		connectTimeout = t
 	}
 
+	// Network Tuning Options
+	maxIdleConns := 1000
+	if n, _ := opt.GetAsInt(option.MaxIdleConns); n > 0 {
+		maxIdleConns = n
+	}
+
+	maxIdleConnsPerHost := 32
+	if n, _ := opt.GetAsInt(option.MaxIdleConnsPerHost); n > 0 {
+		maxIdleConnsPerHost = n
+	}
+
+	idleConnTimeout := 120
+	if t, _ := opt.GetAsInt(option.IdleConnTimeout); t > 0 {
+		idleConnTimeout = t
+	}
+
+	readBufferSize := 256 * 1024
+	if s := opt.Get(option.ReadBufferSize); s != "" {
+		if val, err := option.ParseUnitNumber(s); err == nil {
+			readBufferSize = int(val)
+		}
+	}
+
+	writeBufferSize := 64 * 1024
+	if s := opt.Get(option.WriteBufferSize); s != "" {
+		if val, err := option.ParseUnitNumber(s); err == nil {
+			writeBufferSize = int(val)
+		}
+	}
+
 	// TLS Configuration
 	checkCert, err := opt.GetAsBool(option.CheckCertificate)
 	if err != nil {
@@ -71,18 +101,22 @@ func NewClient(opt *option.Option) *http.Client {
 			InsecureSkipVerify: !checkCert,
 		},
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          maxIdleConns,
+		IdleConnTimeout:       time.Duration(idleConnTimeout) * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		ReadBufferSize:        readBufferSize,
+		WriteBufferSize:       writeBufferSize,
 	}
 
 	// Apply options
 	if maxConnPerServer, _ := opt.GetAsInt(option.MaxConnPerServer); maxConnPerServer > 0 {
+		// If explicit per-server limit is set, use it. Otherwise use the tuning value.
 		transport.MaxIdleConnsPerHost = maxConnPerServer
 		transport.MaxConnsPerHost = maxConnPerServer
 	} else {
-		transport.MaxIdleConnsPerHost = 10
+		transport.MaxIdleConnsPerHost = maxIdleConnsPerHost
+		transport.MaxConnsPerHost = maxIdleConnsPerHost
 	}
 
 	keepAlive, _ := opt.GetAsBool(option.EnableHttpKeepAlive)

@@ -252,3 +252,38 @@ func WithLogFile(path string) Option {
 		c.opt.Put(option.Log, path)
 	}
 }
+
+// WithReadBufferSize sets the read buffer size (e.g. "256K")
+func WithReadBufferSize(size string) Option {
+	return func(c *config) {
+		c.opt.Put(option.ReadBufferSize, size)
+	}
+}
+
+// WithWriteBufferSize sets the write buffer size (e.g. "64K")
+func WithWriteBufferSize(size string) Option {
+	return func(c *config) {
+		c.opt.Put(option.WriteBufferSize, size)
+	}
+}
+
+// WithMaxIdleConns sets the maximum number of idle connections
+func WithMaxIdleConns(n int) Option {
+	return func(c *config) {
+		c.opt.Put(option.MaxIdleConns, fmt.Sprintf("%d", n))
+	}
+}
+
+// WithMaxIdleConnsPerHost sets the maximum number of idle connections per host
+func WithMaxIdleConnsPerHost(n int) Option {
+	return func(c *config) {
+		c.opt.Put(option.MaxIdleConnsPerHost, fmt.Sprintf("%d", n))
+	}
+}
+
+// WithIdleConnTimeout sets the idle connection timeout in seconds
+func WithIdleConnTimeout(seconds int) Option {
+	return func(c *config) {
+		c.opt.Put(option.IdleConnTimeout, fmt.Sprintf("%d", seconds))
+	}
+}

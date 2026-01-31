@@ -578,7 +578,7 @@ func TestEngine_PauseResume(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "hydra_pause_test")
 	defer os.RemoveAll(tmpDir)
 
-	content := make([]byte, 1024*200) // 200KB
+	content := make([]byte, 1024*1024) // 1MB - large enough to not finish instantly with burst
 	server := setupTestServer(t, content)
 	defer server.Close()
 
@@ -588,7 +588,7 @@ func TestEngine_PauseResume(t *testing.T) {
 	// Start a slow download
 	id, err := eng.AddDownload(context.Background(), []string{server.URL},
 		WithFilename("pause_test.bin"),
-		WithMaxSpeed("50K"), // 50KB/s -> ~4s for 200KB
+		WithMaxSpeed("50K"), // 50KB/s -> ~15s remaining after burst
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -660,7 +660,7 @@ func TestEngine_MaxConcurrentDownloads(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "hydra_maxconcurrent_test")
 	defer os.RemoveAll(tmpDir)
 
-	content := make([]byte, 1024*200) // 200KB - larger to ensure queue behavior
+	content := make([]byte, 1024*1024) // 1MB
 	server := setupTestServer(t, content)
 	defer server.Close()
 
@@ -791,7 +791,7 @@ func TestEngine_EventOnCancel(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "hydra_cancel_event_test")
 	defer os.RemoveAll(tmpDir)
 
-	content := make([]byte, 1024*500) // 500KB
+	content := make([]byte, 1024*1024) // 1MB
 	server := setupTestServer(t, content)
 	defer server.Close()
 
@@ -851,7 +851,7 @@ func TestEngine_EventOnPauseResume(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "hydra_pauseresume_event_test")
 	defer os.RemoveAll(tmpDir)
 
-	content := make([]byte, 1024*100) // 100KB
+	content := make([]byte, 1024*1024) // 1MB
 	server := setupTestServer(t, content)
 	defer server.Close()
 
@@ -917,7 +917,7 @@ func TestEngine_Priority(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "hydra_priority_test")
 	defer os.RemoveAll(tmpDir)
 
-	content := make([]byte, 1024*50) // 50KB
+	content := make([]byte, 1024*1024) // 1MB
 	server := setupTestServer(t, content)
 	defer server.Close()
 
@@ -987,7 +987,7 @@ func TestEngine_SetMaxConcurrentDownloads(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "hydra_setmax_test")
 	defer os.RemoveAll(tmpDir)
 
-	content := make([]byte, 1024*200) // 200KB - larger for longer downloads
+	content := make([]byte, 1024*1024) // 1MB
 	server := setupTestServer(t, content)
 	defer server.Close()
 
@@ -1092,7 +1092,7 @@ func TestEngine_QueuePosition(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "hydra_queuepos_test")
 	defer os.RemoveAll(tmpDir)
 
-	content := make([]byte, 1024*200) // 200KB
+	content := make([]byte, 1024*1024) // 1MB
 	server := setupTestServer(t, content)
 	defer server.Close()
 
@@ -1323,7 +1323,7 @@ func TestEngine_SessionWithPendingDownloads(t *testing.T) {
 
 	sessionFile := filepath.Join(tmpDir, "session_pending.json")
 
-	content := make([]byte, 1024*200) // 200KB
+	content := make([]byte, 1024*1024) // 1MB
 	server := setupTestServer(t, content)
 	defer server.Close()
 

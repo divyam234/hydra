@@ -67,7 +67,7 @@ func NewRequestGroup(gid GID, uris []string, opt *option.Option) *RequestGroup {
 		gid:                gid,
 		uris:               uris,
 		options:            opt,
-		diskAdaptor:        disk.NewDirectDiskAdaptor(opt.Get(option.FileAllocation)),
+		diskAdaptor:        disk.NewBufferedDiskAdaptor(opt.Get(option.FileAllocation)),
 		speedCheckInterval: 30 * time.Second,
 		pauseCh:            make(chan struct{}),
 		resumeCh:           make(chan struct{}),
@@ -628,7 +628,9 @@ func (rg *RequestGroup) downloadWorker(ctx context.Context, id int, uriStr strin
 				}
 
 				// Read and write body
-				buf := make([]byte, 32*1024) // 32KB buffer
+				buf := util.GetBuffer()
+				defer util.PutBuffer(buf)
+				// buf := *bufPtr (Removed)
 
 				// Wrap reader with limiter
 				var reader io.Reader = resp.Body
@@ -641,6 +643,10 @@ func (rg *RequestGroup) downloadWorker(ctx context.Context, id int, uriStr strin
 				bytesSinceCheck := int64(0)
 				checkInterval := rg.speedCheckInterval
 
+				// Batch updates to reduce lock contention
+				var pendingBytes int64
+				const batchSize = 256 * 1024 // 256KB - matches buffer size for smoother progress
+
 				for {
 					n, readErr := reader.Read(buf)
 					if n > 0 {
@@ -650,9 +656,14 @@ func (rg *RequestGroup) downloadWorker(ctx context.Context, id int, uriStr strin
 						}
 
 						currentStart += int64(n)
-						rg.segmentMan.UpdateSegment(seg.Index, int64(n))
-						rg.completedBytes.Add(int64(n))
-						rg.speedCalc.Update(n)
+						pendingBytes += int64(n)
+
+						if pendingBytes >= batchSize {
+							rg.segmentMan.UpdateSegment(seg.Index, pendingBytes)
+							rg.completedBytes.Add(pendingBytes)
+							rg.speedCalc.Update(int(pendingBytes))
+							pendingBytes = 0
+						}
 
 						// Lowest Speed Limit Check
 						if lowestSpeedLimit > 0 {
@@ -669,9 +680,20 @@ func (rg *RequestGroup) downloadWorker(ctx context.Context, id int, uriStr strin
 					}
 
 					if readErr == io.EOF {
+						if pendingBytes > 0 {
+							rg.segmentMan.UpdateSegment(seg.Index, pendingBytes)
+							rg.completedBytes.Add(pendingBytes)
+							rg.speedCalc.Update(int(pendingBytes))
+							pendingBytes = 0
+						}
 						break
 					}
 					if readErr != nil {
+						if pendingBytes > 0 {
+							rg.segmentMan.UpdateSegment(seg.Index, pendingBytes)
+							rg.completedBytes.Add(pendingBytes)
+							rg.speedCalc.Update(int(pendingBytes))
+						}
 						return readErr
 					}
 				}
@@ -768,7 +790,8 @@ func (rg *RequestGroup) downloadSingle(ctx context.Context, uriStr string, clien
 			}
 			defer f.Close()
 
-			buf := make([]byte, 32*1024)
+			buf := util.GetBuffer()
+			defer util.PutBuffer(buf)
 			var reader io.Reader = resp.Body
 			if rg.limiter != nil {
 				reader = limit.NewReader(resp.Body, rg.limiter, ctx)

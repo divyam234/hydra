@@ -69,6 +69,22 @@ hydra download "https://example.com/movie.mp4" \
   --max-download-limit 10M \
   --dir /tmp \
   --out my_movie.mp4
+
+### Performance Tuning
+Hydra allows fine-grained control over network buffers and connection pools for maximum throughput:
+
+```bash
+hydra download "https://example.com/huge-dataset.tar.gz" \
+  --read-buffer-size 1M \    # Increase read buffer (default 256K)
+  --write-buffer-size 1M \   # Increase write buffer (default 64K)
+  --max-idle-conns 2000 \    # Max idle connections (default 1000)
+  --idle-conn-timeout 60     # Close idle connections after 60s
+```
+
+### Batch Download
+```bash
+# Download all URLs listed in a file
+hydra download --input-file urls.txt
 ```
 
 ### Batch Download

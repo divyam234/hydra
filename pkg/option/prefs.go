@@ -14,6 +14,13 @@ const (
 	LowestSpeedLimit    = "lowest-speed-limit"
 	MaxFileNotFound     = "max-file-not-found"
 
+	// Advanced Network Tuning
+	ReadBufferSize      = "read-buffer-size"
+	WriteBufferSize     = "write-buffer-size"
+	MaxIdleConns        = "max-idle-conns"
+	MaxIdleConnsPerHost = "max-idle-conns-per-host"
+	IdleConnTimeout     = "idle-conn-timeout"
+
 	// HTTP Options
 	UserAgent            = "user-agent"
 	Header               = "header"
@@ -98,6 +105,13 @@ const (
 	DefaultCheckCertificate       = "true"
 	DefaultForceSequential        = "false"
 	DefaultQuiet                  = "false"
+
+	// Network Tuning Defaults
+	DefaultReadBufferSize      = "256K"
+	DefaultWriteBufferSize     = "64K"
+	DefaultMaxIdleConns        = "1000"
+	DefaultMaxIdleConnsPerHost = "32"
+	DefaultIdleConnTimeout     = "120"
 )
 
 // GetDefaultOptions returns a new Option populated with default values
@@ -126,5 +140,13 @@ func GetDefaultOptions() *Option {
 	opt.Put(CheckCertificate, DefaultCheckCertificate)
 	opt.Put(ForceSequential, DefaultForceSequential)
 	opt.Put(Quiet, DefaultQuiet)
+
+	// Network Tuning
+	opt.Put(ReadBufferSize, DefaultReadBufferSize)
+	opt.Put(WriteBufferSize, DefaultWriteBufferSize)
+	opt.Put(MaxIdleConns, DefaultMaxIdleConns)
+	opt.Put(MaxIdleConnsPerHost, DefaultMaxIdleConnsPerHost)
+	opt.Put(IdleConnTimeout, DefaultIdleConnTimeout)
+
 	return opt
 }
