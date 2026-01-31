@@ -1,75 +1,61 @@
 # Hydra
 
-A high-performance, multi-connection download manager and library written in Go.
+A fast, multi-connection download manager written in Go. Works as a CLI tool or embeddable library.
 
-## Key Features
+## Features
 
-*   **Multi-Connection**: Splits files into segments for parallel downloading.
-*   **Resumable**: Automatically resumes interrupted downloads.
-*   **Queue Management**: Priority-based queuing and concurrency control.
-*   **Rate Limiting**: Global and per-download bandwidth limits.
-*   **Persistence**: Save and restore download sessions.
-*   **Pure Go**: Cross-platform single binary, no dependencies.
+- Multi-connection segmented downloads
+- Resumable interrupted downloads
+- Priority-based download queue
+- Bandwidth limiting
+- Session persistence
+- Checksum verification (MD5, SHA-1, SHA-256, SHA-512)
+- HTTP Basic Auth and cookie support
+- Proxy support
 
 ## Installation
+
+```bash
+# CLI
+go install github.com/divyam234/hydra/cmd/hydra@latest
+
+# Library
+go get github.com/divyam234/hydra
+```
+
+## Quick Start
 
 ### CLI
 
 ```bash
-go install github.com/divyam234/hydra/cmd/hydra@latest
+hydra download "https://example.com/file.zip" --split 8 --dir /tmp
 ```
 
 ### Library
-
-```bash
-go get github.com/divyam234/hydra
-```
-
-## CLI Usage
-
-```bash
-# Basic download
-hydra download "https://example.com/file.zip"
-
-# With options: 8 connections, 5MB/s limit, save to specific path
-hydra download "https://example.com/file.zip" \
-  --split 8 \
-  --max-download-limit 5M \
-  --out /tmp/file.zip
-
-# Performance tuning
-hydra download "https://example.com/large.iso" \
-  --read-buffer-size 1M \
-  --write-buffer-size 1M \
-  --max-idle-conns 2000
-```
-
-## Library Usage
 
 ```go
 package main
 
 import (
     "context"
-    "fmt"
-    "log"
     "github.com/divyam234/hydra/pkg/downloader"
 )
 
 func main() {
-    // Start download with 8 connections
-    _, err := downloader.Download(context.Background(),
-        "https://example.com/data.bin",
+    downloader.Download(context.Background(),
+        "https://example.com/file.zip",
         downloader.WithSplit(8),
-        downloader.WithProgress(func(p downloader.Progress) {
-            fmt.Printf("\r%.2f%%", p.Percent)
-        }),
+        downloader.WithDir("/tmp"),
     )
-    if err != nil {
-        log.Fatal(err)
-    }
 }
 ```
+
+## Documentation
+
+- [CLI Reference](docs/CLI.md) - Command-line options and examples
+- [Library Reference](docs/LIBRARY.md) - Go API documentation
+- [Examples](docs/EXAMPLES.md) - Code examples for common use cases
+- [Architecture](docs/ARCHITECTURE.md) - Internal design overview
 
 ## License
 
