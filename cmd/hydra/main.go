@@ -34,6 +34,9 @@ func (h *headerFlags) Set(v string) error {
 	return nil
 }
 
+// Version is set via ldflags at build time (e.g. -X main.Version=v1.0.0).
+var Version = "dev"
+
 func main() {
 	var headers = headerFlags(http.Header{})
 	opts := hydra.DefaultOptions()
@@ -59,12 +62,19 @@ func main() {
 	quiet := flag.Bool("quiet", false, "disable progress UI")
 	jsonEvents := flag.Bool("json-events", false, "print lifecycle events as JSON lines to stderr")
 	noEnvProxy := flag.Bool("no-env-proxy", false, "ignore HTTP_PROXY/HTTPS_PROXY/NO_PROXY when --proxy is empty")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Var(&headers, "H", "HTTP header, repeatable: -H 'Authorization: Bearer ...'")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [options] URL [mirror URL ...]\n\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("hydra", Version)
+		os.Exit(0)
+	}
+
 	if flag.NArg() == 0 {
 		flag.Usage()
 		os.Exit(2)
