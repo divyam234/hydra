@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -21,6 +19,7 @@ type Downloader struct {
 	opts    Options
 	client  *http.Client
 	bufPool sync.Pool
+	mirrors *mirrorScorer
 }
 
 type Result struct {
@@ -49,7 +48,7 @@ func New(options Options) (*Downloader, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &Downloader{opts: opts, client: client}
+	d := &Downloader{opts: opts, client: client, mirrors: newMirrorScorer()}
 	d.bufPool.New = func() any { return make([]byte, opts.BufferSize) }
 	return d, nil
 }
@@ -257,7 +256,7 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 		return Result{}, err
 	}
 	defer f.Close()
-	if err := f.Truncate(info.Size); err != nil {
+	if err := preallocateFile(f, info.Size); err != nil {
 		return Result{}, err
 	}
 
@@ -269,6 +268,7 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 
 	jobs := make(chan piece)
 	errCh := make(chan error, 1)
+	flusher := startMetadataFlusher(meta, sidecar, d.opts.MetadataFlushInterval)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -279,7 +279,7 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 			defer wg.Done()
 			for p := range jobs {
 				tracker.incActive()
-				err := d.downloadPieceWithRetry(ctx, req.ID, req.URLs, headers, f, p, meta, sidecar, tracker)
+				err := d.downloadPieceWithRetry(ctx, req.ID, req.URLs, headers, f, p, meta, sidecar, tracker, flusher)
 				tracker.decActive()
 				if err != nil {
 					select {
@@ -298,7 +298,7 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 	}
 
 enqueue:
-	for _, p := range meta.pendingPieces(d.opts.Split, d.opts.MinSplitSize) {
+	for _, p := range meta.pendingPieces(max(d.opts.Split, connections*4), d.opts.MinSplitSize) {
 		select {
 		case <-ctx.Done():
 			break enqueue
@@ -307,6 +307,9 @@ enqueue:
 	}
 	close(jobs)
 	wg.Wait()
+	if err := flusher.close(); err != nil {
+		return Result{}, err
+	}
 
 	if err := meta.save(sidecar); err != nil {
 		return Result{}, err
@@ -360,6 +363,17 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 	tracker.incActive()
 	d.emitEvent(Event{Kind: EventDownloading, ID: req.ID, URL: info.URL, Path: finalPath, Time: time.Now()})
 	err = d.getToWriterWithRetry(ctx, req.ID, req.URLs, headers, f, offset, info.Size, tracker)
+	if errors.Is(err, ErrServerNoRange) && offset > 0 {
+		if truncateErr := f.Truncate(0); truncateErr != nil {
+			return Result{}, truncateErr
+		}
+		if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
+			return Result{}, seekErr
+		}
+		tracker.setCompleted(0)
+		resumed = false
+		err = d.getToWriterWithRetry(ctx, req.ID, req.URLs, headers, f, 0, info.Size, tracker)
+	}
 	tracker.decActive()
 	if err != nil {
 		_ = f.Sync()
@@ -394,7 +408,7 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 	return Result{ID: req.ID, Path: finalPath, URL: info.URL, Size: size, Resumed: resumed, Connections: 1, StartedAt: started}, nil
 }
 
-func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls []string, headers http.Header, f *os.File, p piece, meta *metaFile, sidecar string, tracker *progressTracker) error {
+func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls []string, headers http.Header, f *os.File, p piece, meta *metaFile, sidecar string, tracker *progressTracker, flusher *metadataFlusher) error {
 	var last error
 	tries := max(1, d.opts.MaxRetries+1)
 	done := int64(0)
@@ -403,7 +417,7 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 	}
 
 	for attempt := 0; attempt < tries && done < p.size(); attempt++ {
-		for _, raw := range rotated(urls, p.Index+attempt) {
+		for _, raw := range d.mirrors.ordered(urls, p.Index+attempt) {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -415,7 +429,8 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 					markStart = p.Start
 				}
 			}
-			n, err := d.downloadPiece(ctx, raw, headers, f, reqStart, p.End, tracker, func(writtenThisRequest int64) error {
+			started := time.Now()
+			n, err := d.downloadPiece(ctx, raw, headers, f, reqStart, p.End, meta.Size, tracker, func(writtenThisRequest int64) error {
 				if writtenThisRequest <= 0 {
 					return nil
 				}
@@ -425,10 +440,11 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 				}
 				if changed > 0 {
 					tracker.addPiecesDone(int64(changed))
-					return meta.saveIfDue(sidecar, d.opts.MetadataFlushInterval)
+					flusher.request()
 				}
 				return nil
 			})
+			d.mirrors.observe(raw, n, time.Since(started), err)
 			if n > 0 {
 				done += n
 			}
@@ -445,7 +461,7 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 			d.emitRetry(id, raw, p.Index, attempt+1, err, tracker)
 		}
 		if attempt+1 < tries {
-			if err := sleepContext(ctx, d.retryDelay(attempt)); err != nil {
+			if err := sleepContext(ctx, d.retryDelayFor(attempt, last)); err != nil {
 				return err
 			}
 		}
@@ -456,7 +472,7 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 	return io.ErrUnexpectedEOF
 }
 
-func (d *Downloader) downloadPiece(ctx context.Context, raw string, headers http.Header, f *os.File, start, end int64, tracker *progressTracker, onWrite func(int64) error) (int64, error) {
+func (d *Downloader) downloadPiece(ctx context.Context, raw string, headers http.Header, f *os.File, start, end, total int64, tracker *progressTracker, onWrite func(int64) error) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
 		return 0, err
@@ -469,7 +485,10 @@ func (d *Downloader) downloadPiece(ctx context.Context, raw string, headers http
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusPartialContent {
-		return 0, &HTTPStatusError{URL: raw, StatusCode: resp.StatusCode, Status: resp.Status}
+		return 0, &HTTPStatusError{URL: raw, StatusCode: resp.StatusCode, Status: resp.Status, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
+	}
+	if err := validateContentRange(resp.Header.Get("Content-Range"), start, end, total); err != nil {
+		return 0, err
 	}
 	buf := d.getBuffer()
 	defer d.putBuffer(buf)
@@ -481,11 +500,13 @@ func (d *Downloader) getToWriterWithRetry(ctx context.Context, id string, urls [
 	tries := max(1, d.opts.MaxRetries+1)
 	current := offset
 	for attempt := 0; attempt < tries; attempt++ {
-		for _, raw := range rotated(urls, attempt) {
+		for _, raw := range d.mirrors.ordered(urls, attempt) {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			started := time.Now()
 			n, err := d.getToWriter(ctx, raw, headers, w, current, total, tracker)
+			d.mirrors.observe(raw, n, time.Since(started), err)
 			current += n
 			if err == nil {
 				return nil
@@ -497,7 +518,7 @@ func (d *Downloader) getToWriterWithRetry(ctx context.Context, id string, urls [
 			d.emitRetry(id, raw, -1, attempt+1, err, tracker)
 		}
 		if attempt+1 < tries {
-			if err := sleepContext(ctx, d.retryDelay(attempt)); err != nil {
+			if err := sleepContext(ctx, d.retryDelayFor(attempt, last)); err != nil {
 				return err
 			}
 		}
@@ -519,16 +540,19 @@ func (d *Downloader) getToWriter(ctx context.Context, raw string, headers http.H
 		return 0, err
 	}
 	defer resp.Body.Close()
-	if offset > 0 && resp.StatusCode != http.StatusPartialContent {
-		return 0, ErrServerNoRange
-	}
-	if offset == 0 && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
-		return 0, &HTTPStatusError{URL: raw, StatusCode: resp.StatusCode, Status: resp.Status}
-	}
-	if offset > 0 && total > 0 && resp.StatusCode == http.StatusPartialContent {
-		if cr := resp.Header.Get("Content-Range"); cr != "" && !strings.HasPrefix(cr, "bytes "+strconv.FormatInt(offset, 10)+"-") {
-			return 0, fmt.Errorf("unexpected content-range: %s", cr)
+	if offset > 0 {
+		switch resp.StatusCode {
+		case http.StatusPartialContent:
+			if err := validateContentRange(resp.Header.Get("Content-Range"), offset, -1, total); err != nil {
+				return 0, err
+			}
+		case http.StatusOK:
+			return 0, ErrServerNoRange
+		default:
+			return 0, &HTTPStatusError{URL: raw, StatusCode: resp.StatusCode, Status: resp.Status, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 		}
+	} else if resp.StatusCode != http.StatusOK {
+		return 0, &HTTPStatusError{URL: raw, StatusCode: resp.StatusCode, Status: resp.Status, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 	}
 	buf := d.getBuffer()
 	defer d.putBuffer(buf)
@@ -656,14 +680,25 @@ func (d *Downloader) retryDelay(attempt int) time.Duration {
 	if base <= 0 {
 		return 0
 	}
-	// Exponential backoff capped at MaxRetryWait; deterministic to keep tests stable.
 	for i := 0; i < attempt; i++ {
 		base *= 2
 		if d.opts.MaxRetryWait > 0 && base > d.opts.MaxRetryWait {
-			return d.opts.MaxRetryWait
+			base = d.opts.MaxRetryWait
+			break
 		}
 	}
-	return base
+	// Deterministic bounded jitter avoids synchronized retry storms while keeping tests stable.
+	jitter := time.Duration((attempt*1103515245+12345)%21-10) * base / 100
+	return base + jitter
+}
+
+func (d *Downloader) retryDelayFor(attempt int, err error) time.Duration {
+	delay := d.retryDelay(attempt)
+	var statusErr *HTTPStatusError
+	if errors.As(err, &statusErr) && statusErr.RetryAfter > delay {
+		return statusErr.RetryAfter
+	}
+	return delay
 }
 
 func sleepContext(ctx context.Context, d time.Duration) error {

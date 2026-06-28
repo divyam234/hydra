@@ -3,6 +3,7 @@ package hydra
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 var (
@@ -14,6 +15,7 @@ type HTTPStatusError struct {
 	URL        string
 	StatusCode int
 	Status     string
+	RetryAfter time.Duration
 }
 
 func (e *HTTPStatusError) Error() string        { return fmt.Sprintf("%s: %s", e.URL, e.Status) }

@@ -15,8 +15,8 @@ The core package is designed for applications to import directly. The CLI is a s
 - Resume tolerant of unstable CDN/signed-URL validators by default; strict validation is available.
 - HTTP/HTTPS proxy support.
 - SOCKS5 and SOCKS5H proxy support through `golang.org/x/net/proxy`.
-- Mirror URL rotation and retry failover.
-- Exponential retry backoff.
+- Mirror URL rotation, observed throughput/error scoring, and retry failover.
+- Exponential retry backoff with bounded jitter and `Retry-After` support.
 - SHA-256, SHA-512, SHA-1, and MD5 verification.
 - Existing-file policies: `resume`, `overwrite`, `skip`, `error`.
 - Importable package API.
@@ -25,7 +25,9 @@ The core package is designed for applications to import directly. The CLI is a s
 - Rich progress snapshots with speed, average speed, ETA, active connections, retries, resumed bytes, and downloaded bytes.
 - Clean terminal progress UI without noisy internal block counters.
 - File lock guard to prevent multiple writers for the same target.
-- Batched metadata flushing to reduce filesystem overhead while preserving safe cancellation resume.
+- Dedicated metadata flushing to keep sidecar serialization off download workers while preserving safe cancellation resume.
+- Bounded over-decomposed range queues so idle workers can consume remaining work without increasing connection count.
+- Best-effort filesystem preallocation with a portable truncate fallback.
 - Tests for segmented download, bitfield resume, Ctrl+C/context cancellation resume, checksum, retry, manager, HTTP proxy, and SOCKS proxy.
 
 ## Install / build
@@ -161,6 +163,8 @@ On cancellation, Hydra fsyncs the output file, saves the bitfield sidecar, and e
 
 If a server supports byte ranges but does not send `Accept-Ranges` on `HEAD`, Hydra performs a one-byte ranged `GET` probe so resume and segmentation still work. If a CDN or signed URL changes ETag/Last-Modified on every request, resume still works by default as long as path and size match. Use `--strict-resume-validation` or `Options.StrictResumeValidation` when you prefer to fail instead of resuming across changed validators.
 
+Hydra validates every `206 Partial Content` response against the requested byte range and expected object size. Missing or inconsistent `Content-Range` headers are rejected before bytes reach the final file. If a server ignores a single-stream resume request and returns `200 OK`, Hydra safely truncates the `.part` file and restarts from byte zero. Empty-body statuses such as `204 No Content` are reported as HTTP errors and never published as completed downloads.
+
 ## Performance notes
 
 - Use `-s 16 -x 16 -k 20M` for large files on good networks.
@@ -168,6 +172,8 @@ If a server supports byte ranges but does not send `Accept-Ranges` on `HEAD`, Hy
 - Keep `BufferSize` around 256KiB to 1MiB. Larger is not always faster and increases memory per active connection.
 - `MetadataFlushInterval` defaults to 2s to avoid fsyncing the sidecar on every completed resume block.
 - The core copy path uses pooled buffers and `WriteAt`, so memory stays roughly `active_connections * BufferSize` plus small metadata.
+- Segmented downloads queue more bounded range jobs than workers, reducing slow-tail completion while keeping the configured connection count fixed.
+- Mirror ranking is learned in memory from observed throughput and failures; unobserved mirrors are still explored fairly.
 
 ## Current scope
 
