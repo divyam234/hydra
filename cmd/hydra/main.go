@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -48,7 +50,7 @@ func main() {
 	maxConn := flag.Int("x", opts.MaxConnectionsPerServer, "max connections per server")
 	minSplit := flag.String("k", "20M", "minimum split size, e.g. 1M, 20M, 512K")
 	resumeBlock := flag.String("resume-block-size", "1M", "bitfield resume checkpoint granularity, e.g. 512K, 1M, 4M")
-	metadataFlush := flag.Duration("metadata-flush-interval", opts.MetadataFlushInterval, "how often to fsync .hydra metadata during segmented downloads; final save is always forced")
+	metadataFlush := flag.Duration("metadata-flush-interval", opts.MetadataFlushInterval, "how often to fsync .hydra metadata; partial/debug checkpoints are saved when stopping")
 	proxy := flag.String("proxy", "", "proxy URL: http://, https://, socks5://, socks5h://")
 	connectTimeout := flag.Duration("connect-timeout", opts.ConnectTimeout, "connect/proxy timeout")
 	timeout := flag.Duration("timeout", opts.Timeout, "per-request timeout")
@@ -58,7 +60,6 @@ func main() {
 	checksumText := flag.String("checksum", "", "verify final file, e.g. sha256:<hex>")
 	existing := flag.String("if-exists", string(opts.ExistingFile), "existing target policy: resume, overwrite, skip, error")
 	noContinue := flag.Bool("no-continue", false, "disable resume metadata/.part continuation")
-	strictResume := flag.Bool("strict-resume-validation", false, "reject resume metadata when ETag/Last-Modified validators change")
 	quiet := flag.Bool("quiet", false, "disable progress UI")
 	jsonEvents := flag.Bool("json-events", false, "print lifecycle events as JSON lines to stderr")
 	noEnvProxy := flag.Bool("no-env-proxy", false, "ignore HTTP_PROXY/HTTPS_PROXY/NO_PROXY when --proxy is empty")
@@ -82,15 +83,15 @@ func main() {
 
 	minSplitBytes, err := parseSize(*minSplit)
 	if err != nil {
-		die(err)
+		die(err, *jsonEvents)
 	}
 	resumeBlockBytes, err := parseSize(*resumeBlock)
 	if err != nil {
-		die(err)
+		die(err, *jsonEvents)
 	}
 	checksum, err := hydra.ParseChecksum(*checksumText)
 	if err != nil {
-		die(err)
+		die(err, *jsonEvents)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -106,18 +107,22 @@ func main() {
 	opts.ConnectTimeout = *connectTimeout
 	opts.Timeout = *timeout
 	opts.MaxRetries = *retries
+	opts.DisableRetries = *retries == 0
 	opts.RetryWait = *retryWait
 	opts.MaxRetryWait = *maxRetryWait
 	opts.DisableResume = *noContinue
-	opts.StrictResumeValidation = *strictResume
 	opts.Headers = http.Header(headers)
 	opts.ExistingFile = hydra.ExistingFilePolicy(*existing)
 	opts.NoProxyFromEnvironment = *noEnvProxy
 	if !*quiet && !*jsonEvents {
 		opts.OnProgress = ui.Render
 	}
+	var terminalEvent atomic.Bool
 	if *jsonEvents {
 		opts.OnEvent = func(e hydra.Event) {
+			if e.Kind == hydra.EventFailed || e.Kind == hydra.EventCancelled {
+				terminalEvent.Store(true)
+			}
 			b, _ := json.Marshal(e)
 			fmt.Fprintln(os.Stderr, string(b))
 		}
@@ -125,7 +130,10 @@ func main() {
 
 	res, err := hydra.Download(ctx, hydra.Request{URLs: flag.Args(), Dir: *dir, Out: out, Checksum: checksum}, opts)
 	if err != nil {
-		die(err)
+		if *jsonEvents && terminalEvent.Load() {
+			os.Exit(1)
+		}
+		die(err, *jsonEvents)
 	}
 	fmt.Println(res.Path)
 }
@@ -281,6 +289,9 @@ func parseSize(s string) (int64, error) {
 	if n < 0 {
 		return 0, fmt.Errorf("size must be >= 0")
 	}
+	if n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("size overflows int64")
+	}
 	return n * mult, nil
 }
 
@@ -300,4 +311,11 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f%ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-func die(err error) { fmt.Fprintln(os.Stderr, "error:", err); os.Exit(1) }
+func die(err error, jsonEvents bool) {
+	if jsonEvents {
+		_ = json.NewEncoder(os.Stderr).Encode(hydra.Event{Kind: hydra.EventFailed, Error: err.Error(), Time: time.Now()})
+	} else {
+		fmt.Fprintln(os.Stderr, "error:", err)
+	}
+	os.Exit(1)
+}

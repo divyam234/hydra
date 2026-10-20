@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,6 +29,8 @@ type Result struct {
 	URL            string
 	Size           int64
 	Resumed        bool
+	ResumedBytes   int64
+	Downloaded     int64 // Bytes contributing to the output transferred in this invocation.
 	Skipped        bool
 	Verified       bool
 	Checksum       Checksum
@@ -58,8 +61,15 @@ func Download(ctx context.Context, req Request, options Options) (Result, error)
 	if err != nil {
 		return Result{}, err
 	}
+	if d.opts.Transport == nil {
+		defer d.CloseIdleConnections()
+	}
 	return d.Download(ctx, req)
 }
+
+// CloseIdleConnections releases pooled connections without interrupting active
+// downloads. Reusable Downloaders should call it when no longer needed.
+func (d *Downloader) CloseIdleConnections() { d.client.CloseIdleConnections() }
 
 func (d *Downloader) Download(ctx context.Context, req Request) (Result, error) {
 	started := time.Now()
@@ -78,6 +88,17 @@ func (d *Downloader) Download(ctx context.Context, req Request) (Result, error) 
 	mergeHeader(headers, req.Headers)
 
 	d.emitEvent(Event{Kind: EventStarted, ID: req.ID, URL: req.URLs[0], Time: started})
+	if req.Out != "" && (policy == ExistingFileSkip || policy == ExistingFileError) {
+		path := filepath.Join(req.Dir, req.Out)
+		res, handled, err := d.handleKnownExisting(ctx, req, path, policy, started)
+		if err != nil {
+			d.failEvent(req.ID, req.URLs[0], path, started, err)
+			return Result{}, err
+		}
+		if handled {
+			return res, nil
+		}
+	}
 	if d.opts.OnProgress != nil {
 		d.opts.OnProgress(Progress{ID: req.ID, State: StateProbing, StartedAt: started, UpdatedAt: time.Now()})
 	}
@@ -88,10 +109,13 @@ func (d *Downloader) Download(ctx context.Context, req Request) (Result, error) 
 		d.failEvent(req.ID, req.URLs[0], "", started, err)
 		return Result{}, err
 	}
-	if req.ExpectedSize > 0 && info.Size > 0 && req.ExpectedSize != info.Size {
+	if req.ExpectedSize > 0 && info.Size >= 0 && req.ExpectedSize != info.Size {
 		err := fmt.Errorf("unexpected size: expected %d got %d", req.ExpectedSize, info.Size)
 		d.failEvent(req.ID, info.URL, "", started, err)
 		return Result{}, err
+	}
+	if req.ExpectedSize > 0 && info.Size < 0 {
+		info.Size = req.ExpectedSize
 	}
 
 	outName := req.Out
@@ -122,9 +146,11 @@ func (d *Downloader) Download(ctx context.Context, req Request) (Result, error) 
 		return res, nil
 	}
 
-	useRanges := info.Size > 0 && info.AcceptRanges
+	// Multiple responses need a byte-exact identity or an expected final digest.
+	// Last-Modified alone is too coarse to exclude same-second replacements.
+	useRanges := info.Size > 0 && info.AcceptRanges && (strongETag(info.ETag) || !req.Checksum.Empty())
 	connections := 1
-	if useRanges && d.opts.Split > 1 && info.Size >= 2*d.opts.MinSplitSize {
+	if useRanges && d.opts.Split > 1 && info.Size/d.opts.MinSplitSize >= 2 {
 		connections = min(d.opts.Split, d.opts.MaxConnectionsPerServer)
 		if int64(connections) > info.Size {
 			connections = int(info.Size)
@@ -132,10 +158,18 @@ func (d *Downloader) Download(ctx context.Context, req Request) (Result, error) 
 	}
 
 	var res Result
+	headers = representationHeaders(headers, info)
 	if connections > 1 {
 		res, err = d.downloadSegmented(ctx, req, headers, info, finalPath, connections, started)
+		if errors.Is(err, ErrServerNoRange) {
+			// Some origins advertise byte ranges but ignore them. Do not fail an
+			// otherwise downloadable object, or publish the preallocated holes.
+			res, err = d.downloadSingle(ctx, req, headers, info, finalPath, false, started)
+		}
 	} else {
-		res, err = d.downloadSingle(ctx, req, headers, info, finalPath, useRanges, started)
+		// A partial file can try a resume even without Accept-Ranges. A server
+		// returning 200 instead of 206 triggers the safe restart path below.
+		res, err = d.downloadSingle(ctx, req, headers, info, finalPath, info.Size > 0, started)
 	}
 	if err != nil {
 		state := StateFailed
@@ -166,15 +200,36 @@ func (d *Downloader) Download(ctx context.Context, req Request) (Result, error) 
 	}
 	res.FinishedAt = time.Now()
 	res.Duration = res.FinishedAt.Sub(started)
-	if res.Duration > 0 && res.Size > 0 {
-		res.AvgSpeed = float64(res.Size) / res.Duration.Seconds()
+	res.Downloaded = res.Size - res.ResumedBytes
+	if res.Duration > 0 && res.Downloaded > 0 {
+		res.AvgSpeed = float64(res.Downloaded) / res.Duration.Seconds()
 	}
-	prog := Progress{ID: req.ID, State: StateComplete, Path: res.Path, Total: res.Size, Completed: res.Size, Connections: res.Connections, StartedAt: started, UpdatedAt: res.FinishedAt, AvgSpeed: res.AvgSpeed}
+	prog := Progress{ID: req.ID, State: StateComplete, Path: res.Path, Total: res.Size, Completed: res.Size, Resumed: res.ResumedBytes, Downloaded: res.Downloaded, Connections: res.Connections, StartedAt: started, UpdatedAt: res.FinishedAt, AvgSpeed: res.AvgSpeed}
 	if d.opts.OnProgress != nil {
 		d.opts.OnProgress(prog)
 	}
 	d.emitEvent(Event{Kind: EventCompleted, ID: req.ID, URL: res.URL, Path: res.Path, Total: res.Size, Completed: res.Size, Time: res.FinishedAt, Progress: prog})
 	return res, nil
+}
+
+func (d *Downloader) handleKnownExisting(ctx context.Context, req Request, path string, policy ExistingFilePolicy, started time.Time) (Result, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, true, err
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return Result{}, false, nil
+		}
+		return Result{}, true, err
+	}
+	if !d.opts.DisableFileLock {
+		lock, err := acquireFileLock(path)
+		if err != nil {
+			return Result{}, true, err
+		}
+		defer lock.Release()
+	}
+	return d.handleExisting(ctx, req, probeInfo{URL: req.URLs[0], Size: -1}, path, policy, started)
 }
 
 func (d *Downloader) handleExisting(ctx context.Context, req Request, info probeInfo, finalPath string, policy ExistingFilePolicy, started time.Time) (Result, bool, error) {
@@ -184,10 +239,15 @@ func (d *Downloader) handleExisting(ctx context.Context, req Request, info probe
 	if statErr != nil && !os.IsNotExist(statErr) {
 		return Result{}, false, statErr
 	}
+	if statErr == nil && !st.Mode().IsRegular() {
+		return Result{}, true, fmt.Errorf("target is not a regular file: %s", finalPath)
+	}
 	if policy == ExistingFileOverwrite {
-		_ = removeIfExists(finalPath)
-		_ = removeIfExists(partPath(finalPath))
-		_ = removeIfExists(sidecarPath(finalPath))
+		for _, path := range []string{finalPath, partPath(finalPath), sidecarPath(finalPath)} {
+			if err := removeIfExists(path); err != nil {
+				return Result{}, false, err
+			}
+		}
 		return Result{}, false, nil
 	}
 	if !exists {
@@ -197,7 +257,10 @@ func (d *Downloader) handleExisting(ctx context.Context, req Request, info probe
 		return Result{}, true, fmt.Errorf("target exists: %s", finalPath)
 	}
 	if policy == ExistingFileSkip || (policy == ExistingFileResume && !hasResumeState(finalPath)) {
-		res := Result{ID: req.ID, Path: finalPath, URL: info.URL, Size: st.Size(), Skipped: true, Connections: 0, StartedAt: started, FinishedAt: time.Now()}
+		res := Result{ID: req.ID, Path: finalPath, URL: info.URL, Size: st.Size(), Skipped: true, Connections: 0, StartedAt: started}
+		if req.ExpectedSize > 0 && st.Size() != req.ExpectedSize {
+			return Result{}, true, fmt.Errorf("existing file size mismatch: expected %d got %d", req.ExpectedSize, st.Size())
+		}
 		if !req.Checksum.Empty() {
 			actual, err := req.Checksum.VerifyFile(finalPath)
 			res.Checksum = req.Checksum.normalized()
@@ -207,10 +270,8 @@ func (d *Downloader) handleExisting(ctx context.Context, req Request, info probe
 			}
 			res.Verified = true
 		}
-		if req.ExpectedSize > 0 && st.Size() != req.ExpectedSize {
-			return Result{}, true, fmt.Errorf("existing file size mismatch: expected %d got %d", req.ExpectedSize, st.Size())
-		}
-		if info.Size > 0 && st.Size() == info.Size || info.Size <= 0 {
+		if policy == ExistingFileSkip || info.Size >= 0 && st.Size() == info.Size || info.Size < 0 {
+			res.FinishedAt = time.Now()
 			res.Duration = res.FinishedAt.Sub(started)
 			prog := Progress{ID: req.ID, State: StateSkipped, Path: finalPath, Total: res.Size, Completed: res.Size, StartedAt: started, UpdatedAt: res.FinishedAt}
 			if d.opts.OnProgress != nil {
@@ -225,23 +286,28 @@ func (d *Downloader) handleExisting(ctx context.Context, req Request, info probe
 }
 
 func hasResumeState(finalPath string) bool {
-	if _, err := os.Stat(sidecarPath(finalPath)); err == nil {
+	if st, err := os.Stat(sidecarPath(finalPath)); err == nil && st.Mode().IsRegular() {
 		return true
 	}
-	if _, err := os.Stat(partPath(finalPath)); err == nil {
+	if st, err := os.Stat(partPath(finalPath)); err == nil && st.Mode().IsRegular() {
 		return true
 	}
 	return false
 }
 
 func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers http.Header, info probeInfo, finalPath string, connections int, started time.Time) (Result, error) {
+	if err := validateMetadataSize(info.Size, d.opts.ResumeBlockSize); err != nil {
+		return Result{}, err
+	}
 	sidecar := sidecarPath(finalPath)
 	resumed := false
 	var meta *metaFile
 	if !d.opts.DisableResume {
-		if loaded, err := loadMeta(sidecar); err == nil && loaded.compatible(finalPath, info, d.opts.StrictResumeValidation) {
-			meta = loaded
-			resumed = loaded.completedBytes() > 0
+		if loaded, err := loadMeta(sidecar); err == nil && !loaded.Single && loaded.compatible(finalPath, info) {
+			// A sidecar alone cannot prove that its completed bytes still exist.
+			if st, err := os.Stat(finalPath); err == nil && st.Mode().IsRegular() && st.Size() == info.Size {
+				meta = loaded
+			}
 		}
 	}
 	if meta == nil {
@@ -256,19 +322,24 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 		return Result{}, err
 	}
 	defer f.Close()
+	if err := meta.verifyCompletedBlocks(ctx, f); err != nil {
+		return Result{}, err
+	}
+	resumed = meta.completedBytes() > 0
 	if err := preallocateFile(f, info.Size); err != nil {
 		return Result{}, err
 	}
 
 	tracker := newProgressTracker(req.ID, info.Size, connections, int64(meta.piecesTotal()), finalPath, d.opts.ProgressInterval, d.opts.OnProgress)
-	tracker.setCompleted(meta.completedBytes())
+	resumedBytes := meta.completedBytes()
+	tracker.setCompleted(resumedBytes)
 	tracker.piecesDone.Store(int64(meta.donePieces()))
 	tracker.emit(StateDownloading, "", true)
 	d.emitEvent(Event{Kind: EventDownloading, ID: req.ID, URL: info.URL, Path: finalPath, Time: time.Now()})
 
 	jobs := make(chan piece)
 	errCh := make(chan error, 1)
-	flusher := startMetadataFlusher(meta, sidecar, d.opts.MetadataFlushInterval)
+	flusher := startMetadataFlusher(meta, sidecar, d.opts.MetadataFlushInterval, f.Sync)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -289,9 +360,8 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 					cancel()
 					return
 				}
-				// Piece counters are driven by resume-block bit flips during writes.
-				// Sync to metadata here, but never increment blindly on HTTP range-job completion.
-				tracker.piecesDone.Store(int64(meta.donePieces()))
+				// Only block-bit transitions increment the counter. Replacing it
+				// with a metadata snapshot races with other workers' increments.
 				d.emitEvent(Event{Kind: EventPieceDone, ID: req.ID, URL: info.URL, Path: finalPath, PieceIndex: p.Index, Total: info.Size, Completed: tracker.completed.Load(), Time: time.Now(), Progress: tracker.snapshot(StateDownloading, "", time.Now())})
 			}
 		}(i)
@@ -311,29 +381,36 @@ enqueue:
 		return Result{}, err
 	}
 
-	if err := meta.save(sidecar); err != nil {
-		return Result{}, err
-	}
 	if err := f.Sync(); err != nil {
 		return Result{}, err
 	}
-
+	var transferErr error
 	select {
 	case err := <-errCh:
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			tracker.emit(StateCancelled, err.Error(), true)
-		}
-		return Result{}, err
+		transferErr = err
 	default:
+		transferErr = ctx.Err()
 	}
-	if err := ctx.Err(); err != nil {
-		tracker.emit(StateCancelled, err.Error(), true)
-		return Result{}, err
+	if transferErr != nil || d.opts.KeepPartFile {
+		if err := meta.save(sidecar); err != nil {
+			return Result{}, err
+		}
+	}
+	if transferErr != nil {
+		if errors.Is(transferErr, context.Canceled) || errors.Is(transferErr, context.DeadlineExceeded) {
+			tracker.emit(StateCancelled, transferErr.Error(), true)
+		}
+		return Result{}, transferErr
 	}
 	if !d.opts.KeepPartFile {
+		// The complete output is already synced. Do not rewrite and fsync a
+		// completed checkpoint just to delete it; persist the directory change.
 		_ = removeIfExists(sidecar)
+		if err := syncDir(filepath.Dir(finalPath)); err != nil {
+			return Result{}, err
+		}
 	}
-	return Result{ID: req.ID, Path: finalPath, URL: info.URL, Size: info.Size, Resumed: resumed, Connections: connections, StartedAt: started}, nil
+	return Result{ID: req.ID, Path: finalPath, URL: info.URL, Size: info.Size, Resumed: resumed, ResumedBytes: resumedBytes, Connections: connections, StartedAt: started}, nil
 }
 
 func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers http.Header, info probeInfo, finalPath string, canResume bool, started time.Time) (Result, error) {
@@ -343,12 +420,20 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 	flag := os.O_CREATE | os.O_WRONLY
 	if !d.opts.DisableResume && canResume {
 		if st, err := os.Stat(tmp); err == nil && st.Size() > 0 && (info.Size <= 0 || st.Size() < info.Size) {
-			offset = st.Size()
-			resumed = true
-			flag |= os.O_APPEND
-		} else {
-			flag |= os.O_TRUNC
+			if meta, err := loadMeta(sidecarPath(finalPath)); err == nil && meta.Single && meta.compatible(finalPath, info) && meta.PrefixSize == st.Size() {
+				if prefix, err := os.Open(tmp); err == nil {
+					digest, hashErr := hashFileBlock(prefix, 0, st.Size())
+					_ = prefix.Close()
+					if hashErr == nil && fmt.Sprintf("%x", digest) == meta.PrefixHash {
+						offset = st.Size()
+						resumed = true
+					}
+				}
+			}
 		}
+	}
+	if resumed {
+		flag |= os.O_APPEND
 	} else {
 		flag |= os.O_TRUNC
 	}
@@ -357,13 +442,15 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 		return Result{}, err
 	}
 	defer f.Close()
+	// A bare .part file has no proven object identity. Never append to it just
+	// because its length is plausible, including when switching transfer modes.
 
 	tracker := newProgressTracker(req.ID, info.Size, 1, 1, finalPath, d.opts.ProgressInterval, d.opts.OnProgress)
 	tracker.setCompleted(offset)
 	tracker.incActive()
 	d.emitEvent(Event{Kind: EventDownloading, ID: req.ID, URL: info.URL, Path: finalPath, Time: time.Now()})
 	err = d.getToWriterWithRetry(ctx, req.ID, req.URLs, headers, f, offset, info.Size, tracker)
-	if errors.Is(err, ErrServerNoRange) && offset > 0 {
+	if errors.Is(err, ErrServerNoRange) && tracker.completed.Load() > 0 {
 		if truncateErr := f.Truncate(0); truncateErr != nil {
 			return Result{}, truncateErr
 		}
@@ -372,18 +459,30 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 		}
 		tracker.setCompleted(0)
 		resumed = false
+		offset = 0
 		err = d.getToWriterWithRetry(ctx, req.ID, req.URLs, headers, f, 0, info.Size, tracker)
 	}
 	tracker.decActive()
 	if err != nil {
-		_ = f.Sync()
+		if syncErr := f.Sync(); syncErr != nil {
+			return Result{}, syncErr
+		}
+		if info.Size > 0 {
+			if saveErr := saveSingleResume(tmp, finalPath, req.URLs, info); saveErr != nil {
+				return Result{}, saveErr
+			}
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			tracker.emit(StateCancelled, err.Error(), true)
 		}
 		return Result{}, err
 	}
-	if info.Size > 0 {
-		if st, err := f.Stat(); err == nil && st.Size() != info.Size {
+	if info.Size >= 0 {
+		st, err := f.Stat()
+		if err != nil {
+			return Result{}, err
+		}
+		if st.Size() != info.Size {
 			return Result{}, fmt.Errorf("downloaded size mismatch: expected %d got %d", info.Size, st.Size())
 		}
 	}
@@ -398,6 +497,7 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 	}
 	if !d.opts.KeepPartFile {
 		_ = removeIfExists(tmp)
+		_ = removeIfExists(sidecarPath(finalPath))
 	}
 	size := info.Size
 	if size <= 0 {
@@ -405,11 +505,12 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 			size = st.Size()
 		}
 	}
-	return Result{ID: req.ID, Path: finalPath, URL: info.URL, Size: size, Resumed: resumed, Connections: 1, StartedAt: started}, nil
+	return Result{ID: req.ID, Path: finalPath, URL: info.URL, Size: size, Resumed: resumed, ResumedBytes: offset, Connections: 1, StartedAt: started}, nil
 }
 
 func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls []string, headers http.Header, f *os.File, p piece, meta *metaFile, sidecar string, tracker *progressTracker, flusher *metadataFlusher) error {
 	var last error
+	badURLs := make(map[string]bool)
 	tries := max(1, d.opts.MaxRetries+1)
 	done := int64(0)
 	if p.size() <= 0 {
@@ -417,7 +518,11 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 	}
 
 	for attempt := 0; attempt < tries && done < p.size(); attempt++ {
+		canRetry := false
 		for _, raw := range d.mirrors.ordered(urls, p.Index+attempt) {
+			if badURLs[raw] {
+				continue
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -434,13 +539,15 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 				if writtenThisRequest <= 0 {
 					return nil
 				}
-				changed, markErr := meta.markRangeComplete(markStart, reqStart+writtenThisRequest-1, sidecar)
+				changed, markErr := meta.markRangeCompleteFromFile(f, markStart, reqStart+writtenThisRequest-1, sidecar)
 				if markErr != nil {
 					return markErr
 				}
 				if changed > 0 {
 					tracker.addPiecesDone(int64(changed))
 					flusher.request()
+					// Already-completed blocks need not be rescanned on each buffer.
+					markStart = ((reqStart + writtenThisRequest) / meta.BlockSize) * meta.BlockSize
 				}
 				return nil
 			})
@@ -456,9 +563,18 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 			}
 			last = err
 			if !retryable(err) {
+				var statusErr *HTTPStatusError
+				if errors.As(err, &statusErr) || errors.Is(err, ErrInvalidContentRange) || errors.Is(err, ErrServerNoRange) || errors.Is(err, ErrRemoteChanged) {
+					badURLs[raw] = true
+					continue // A permanent failure of one mirror need not fail the file.
+				}
 				return err
 			}
+			canRetry = true
 			d.emitRetry(id, raw, p.Index, attempt+1, err, tracker)
+		}
+		if !canRetry {
+			break
 		}
 		if attempt+1 < tries {
 			if err := sleepContext(ctx, d.retryDelayFor(attempt, last)); err != nil {
@@ -484,6 +600,12 @@ func (d *Downloader) downloadPiece(ctx context.Context, raw string, headers http
 		return 0, err
 	}
 	defer resp.Body.Close()
+	if err := validateRepresentation(headers, resp); err != nil {
+		return 0, err
+	}
+	if resp.StatusCode == http.StatusOK {
+		return 0, ErrServerNoRange
+	}
 	if resp.StatusCode != http.StatusPartialContent {
 		return 0, &HTTPStatusError{URL: raw, StatusCode: resp.StatusCode, Status: resp.Status, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 	}
@@ -497,10 +619,15 @@ func (d *Downloader) downloadPiece(ctx context.Context, raw string, headers http
 
 func (d *Downloader) getToWriterWithRetry(ctx context.Context, id string, urls []string, headers http.Header, w io.Writer, offset int64, total int64, tracker *progressTracker) error {
 	var last error
+	badURLs := make(map[string]bool)
 	tries := max(1, d.opts.MaxRetries+1)
 	current := offset
 	for attempt := 0; attempt < tries; attempt++ {
+		canRetry := false
 		for _, raw := range d.mirrors.ordered(urls, attempt) {
+			if badURLs[raw] {
+				continue
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -508,14 +635,28 @@ func (d *Downloader) getToWriterWithRetry(ctx context.Context, id string, urls [
 			n, err := d.getToWriter(ctx, raw, headers, w, current, total, tracker)
 			d.mirrors.observe(raw, n, time.Since(started), err)
 			current += n
+			// Without a representation validator, appending a retry could combine
+			// two versions. Let the caller restart the stream from byte zero.
+			if retryable(err) && current > 0 && !strongETag(headers.Get("If-Match")) {
+				return ErrServerNoRange
+			}
 			if err == nil {
 				return nil
 			}
 			last = err
 			if !retryable(err) {
+				var statusErr *HTTPStatusError
+				if errors.As(err, &statusErr) || errors.Is(err, ErrInvalidContentRange) || errors.Is(err, ErrServerNoRange) || errors.Is(err, ErrRemoteChanged) {
+					badURLs[raw] = true
+					continue
+				}
 				return err
 			}
+			canRetry = true
 			d.emitRetry(id, raw, -1, attempt+1, err, tracker)
+		}
+		if !canRetry {
+			break
 		}
 		if attempt+1 < tries {
 			if err := sleepContext(ctx, d.retryDelayFor(attempt, last)); err != nil {
@@ -540,6 +681,9 @@ func (d *Downloader) getToWriter(ctx context.Context, raw string, headers http.H
 		return 0, err
 	}
 	defer resp.Body.Close()
+	if err := validateRepresentation(headers, resp); err != nil {
+		return 0, err
+	}
 	if offset > 0 {
 		switch resp.StatusCode {
 		case http.StatusPartialContent:
@@ -669,7 +813,11 @@ func retryable(err error) bool {
 		}
 		return false
 	}
-	if errors.Is(err, ErrServerNoRange) || errors.Is(err, ErrChecksumMismatch) {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) || errors.Is(err, io.ErrShortWrite) {
+		return false
+	}
+	if errors.Is(err, ErrServerNoRange) || errors.Is(err, ErrChecksumMismatch) || errors.Is(err, ErrInvalidContentRange) || errors.Is(err, ErrRemoteChanged) {
 		return false
 	}
 	return true
@@ -680,15 +828,24 @@ func (d *Downloader) retryDelay(attempt int) time.Duration {
 	if base <= 0 {
 		return 0
 	}
+	limit := d.opts.MaxRetryWait
+	if limit <= 0 {
+		limit = time.Duration(math.MaxInt64)
+	}
+	base = min(base, limit)
 	for i := 0; i < attempt; i++ {
-		base *= 2
-		if d.opts.MaxRetryWait > 0 && base > d.opts.MaxRetryWait {
-			base = d.opts.MaxRetryWait
+		if base >= limit-base {
+			base = limit
 			break
 		}
+		base *= 2
 	}
 	// Deterministic bounded jitter avoids synchronized retry storms while keeping tests stable.
-	jitter := time.Duration((attempt*1103515245+12345)%21-10) * base / 100
+	percent := (attempt%21*(1103515245%21)+12345%21)%21 - 10
+	jitter := base / 100 * time.Duration(percent)
+	if jitter > 0 && base > limit-jitter {
+		return limit
+	}
 	return base + jitter
 }
 

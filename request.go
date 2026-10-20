@@ -71,8 +71,15 @@ func (r Request) normalized() (Request, error) {
 	if r.ExpectedSize < 0 {
 		return r, errors.New("ExpectedSize must be >= 0")
 	}
+	if r.ExistingFile != "" {
+		switch r.ExistingFile {
+		case ExistingFileResume, ExistingFileOverwrite, ExistingFileSkip, ExistingFileError:
+		default:
+			return r, errors.New("invalid ExistingFile policy: " + string(r.ExistingFile))
+		}
+	}
 	if !r.Checksum.Empty() {
-		if _, err := r.Checksum.normalized().newHash(); err != nil {
+		if _, err := r.Checksum.validatedHash(); err != nil {
 			return r, err
 		}
 	}

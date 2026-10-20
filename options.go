@@ -60,6 +60,9 @@ type Options struct {
 	ConnectTimeout time.Duration
 	Timeout        time.Duration
 	MaxRetries     int
+	// DisableRetries makes exactly one attempt per mirror. MaxRetries == 0
+	// otherwise selects the default so zero-valued Options remain useful.
+	DisableRetries bool
 	RetryWait      time.Duration
 	MaxRetryWait   time.Duration
 
@@ -73,8 +76,9 @@ type Options struct {
 	ResumeBlockSize int64
 
 	// MetadataFlushInterval batches .hydra sidecar fsyncs during segmented
-	// downloads. A final save still happens on success, retry failure, or
-	// cancellation. Lower values protect more progress against hard crashes;
+	// downloads. Partial/debug state is saved on failure, cancellation or when
+	// KeepPartFile is set; completed outputs are synced before checkpoint cleanup.
+	// Lower values protect more progress against hard crashes;
 	// higher values reduce filesystem overhead. Defaults to 2s.
 	MetadataFlushInterval time.Duration
 
@@ -96,13 +100,6 @@ type Options struct {
 	// DisableResume disables completed-piece resume using the sidecar metadata file.
 	DisableResume bool
 
-	// StrictResumeValidation rejects sidecar metadata when ETag/Last-Modified
-	// validators change between runs. The default is false because many CDNs,
-	// signed URLs, and object gateways emit unstable validators even when the
-	// byte object is identical. Size/path are still checked, and checksum
-	// verification can be used for strong final integrity.
-	StrictResumeValidation bool
-
 	// ExistingFile controls existing final-file behavior.
 	ExistingFile ExistingFilePolicy
 
@@ -119,7 +116,8 @@ type Options struct {
 	// OnProgress is called from worker goroutines. Keep it fast/non-blocking.
 	OnProgress ProgressFunc
 
-	// OnEvent receives lifecycle/retry/piece/checksum events.
+	// OnEvent receives lifecycle/retry/piece/checksum events from download
+	// workers. Keep it fast/non-blocking, like OnProgress.
 	OnEvent EventFunc
 
 	// Transport allows advanced users to provide their own transport. If set,
@@ -170,7 +168,7 @@ func (o Options) normalized() (Options, error) {
 	if o.Timeout == 0 {
 		o.Timeout = d.Timeout
 	}
-	if o.MaxRetries == 0 {
+	if o.MaxRetries == 0 && !o.DisableRetries {
 		o.MaxRetries = d.MaxRetries
 	}
 	if o.RetryWait == 0 {
@@ -214,6 +212,12 @@ func (o Options) normalized() (Options, error) {
 	}
 	if o.MaxRetries < 0 {
 		return o, errors.New("MaxRetries must be >= 0")
+	}
+	if o.DisableRetries {
+		o.MaxRetries = 0
+	}
+	if o.MaxRetries == int(^uint(0)>>1) {
+		return o, errors.New("MaxRetries is too large")
 	}
 	if o.BufferSize < 32*1024 {
 		return o, errors.New("BufferSize must be >= 32KiB")

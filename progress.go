@@ -91,7 +91,9 @@ func (p *progressTracker) add(n int64) {
 		return
 	}
 	p.completed.Add(n)
-	p.emit(StateDownloading, "", false)
+	if p.callback != nil {
+		p.emit(StateDownloading, "", false)
+	}
 }
 
 func (p *progressTracker) setCompleted(n int64) {
@@ -115,7 +117,9 @@ func (p *progressTracker) addPiecesDone(n int64) {
 		return
 	}
 	p.piecesDone.Add(n)
-	p.emit(StateDownloading, "", true)
+	if p.callback != nil {
+		p.emit(StateDownloading, "", true)
+	}
 }
 func (p *progressTracker) incRetry() { p.retries.Add(1); p.emit(StateDownloading, "", true) }
 
@@ -212,7 +216,7 @@ func (p *progressTracker) emit(state State, errText string, force bool) Progress
 		// Do not mutate the sampling state when throttling. Mutating here was the
 		// source of bogus progress speeds because bytes were consumed by snapshots
 		// that were never emitted to the UI.
-		return p.snapshot(state, errText, now)
+		return p.snapshotWithSpeed(state, errText, now, 0)
 	}
 	completed := p.completed.Load()
 	inst := p.rollingSpeed(now, completed)

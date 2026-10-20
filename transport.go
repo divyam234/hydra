@@ -33,6 +33,9 @@ func newHTTPClient(o Options) (*http.Client, error) {
 		DisableCompression:    o.DisableCompression,
 	}
 
+	if o.Proxy == "" && !o.NoProxyFromEnvironment {
+		tr.Proxy = http.ProxyFromEnvironment
+	}
 	if o.Proxy != "" {
 		pu, err := url.Parse(o.Proxy)
 		if err != nil {

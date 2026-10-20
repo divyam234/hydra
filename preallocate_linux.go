@@ -18,5 +18,6 @@ func preallocateFile(f *os.File, size int64) error {
 		}
 		return err
 	}
-	return nil
+	// Fallocate grows files but does not shrink an existing larger output.
+	return f.Truncate(size)
 }

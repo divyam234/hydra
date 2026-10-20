@@ -7,8 +7,10 @@ import (
 )
 
 var (
-	ErrServerNoRange = errors.New("server does not support byte ranges")
-	ErrBadStatus     = errors.New("unexpected HTTP status")
+	ErrServerNoRange       = errors.New("server does not support byte ranges")
+	ErrBadStatus           = errors.New("unexpected HTTP status")
+	ErrInvalidContentRange = errors.New("invalid content-range")
+	ErrRemoteChanged       = errors.New("remote representation changed")
 )
 
 type HTTPStatusError struct {

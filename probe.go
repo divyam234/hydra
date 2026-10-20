@@ -47,14 +47,14 @@ func (d *Downloader) probeOne(ctx context.Context, raw string, headers http.Head
 			// Some servers support Range but do not advertise Accept-Ranges on HEAD.
 			// Resume must not depend only on that header, so verify with
 			// a one-byte ranged GET when the size is known.
-			if d.opts.Split > 1 && !info.AcceptRanges && info.Size > 0 {
+			if min(d.opts.Split, d.opts.MaxConnectionsPerServer) > 1 && !info.AcceptRanges && info.Size > 0 && info.Size/d.opts.MinSplitSize >= 2 {
 				if ranged, ok := d.probeRange(ctx, raw, headers, info); ok {
 					return ranged, nil
 				}
 			}
 			return info, nil
 		}
-		if resp.StatusCode != http.StatusMethodNotAllowed && resp.StatusCode != http.StatusForbidden {
+		if resp.StatusCode != http.StatusMethodNotAllowed && resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusNotImplemented {
 			return probeInfo{}, &HTTPStatusError{URL: raw, StatusCode: resp.StatusCode, Status: resp.Status}
 		}
 	}
@@ -76,6 +76,9 @@ func (d *Downloader) probeOne(ctx context.Context, raw string, headers http.Head
 	}
 	info := probeFromResponse(raw, resp, true)
 	if resp.StatusCode == http.StatusPartialContent {
+		if err := validateContentRange(resp.Header.Get("Content-Range"), 0, 0, -1); err != nil {
+			return probeInfo{}, err
+		}
 		info.AcceptRanges = true
 		if cr := resp.Header.Get("Content-Range"); cr != "" {
 			if slash := strings.LastIndex(cr, "/"); slash >= 0 {
@@ -101,6 +104,9 @@ func (d *Downloader) probeRange(ctx context.Context, raw string, headers http.He
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusPartialContent {
+		return probeInfo{}, false
+	}
+	if err := validateContentRange(resp.Header.Get("Content-Range"), 0, 0, base.Size); err != nil {
 		return probeInfo{}, false
 	}
 	info := probeFromResponse(raw, resp, true)
@@ -149,10 +155,10 @@ func filenameFromResponse(raw string, h http.Header) string {
 		_, params, err := mime.ParseMediaType(cd)
 		if err == nil {
 			if fn := strings.TrimSpace(params["filename*"]); fn != "" {
-				return path.Base(fn)
+				return safeFilename(fn)
 			}
 			if fn := strings.TrimSpace(params["filename"]); fn != "" {
-				return path.Base(fn)
+				return safeFilename(fn)
 			}
 		}
 	}
@@ -160,8 +166,16 @@ func filenameFromResponse(raw string, h http.Header) string {
 	if err == nil {
 		base := path.Base(u.Path)
 		if base != "." && base != "/" && base != "" {
-			return base
+			return safeFilename(base)
 		}
 	}
 	return "download.bin"
+}
+
+func safeFilename(name string) string {
+	name = path.Base(strings.ReplaceAll(name, `\`, "/"))
+	if name == "" || name == "." || name == ".." || name == "/" || strings.ContainsRune(name, 0) {
+		return "download.bin"
+	}
+	return name
 }

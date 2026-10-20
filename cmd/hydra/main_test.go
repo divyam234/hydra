@@ -41,3 +41,14 @@ func TestTerminalUISmoothsDisplaySpeed(t *testing.T) {
 		t.Fatalf("expected EMA-smoothed speed between old and raw, got %f", ui.speed)
 	}
 }
+
+func TestParseSizeRejectsOverflow(t *testing.T) {
+	for _, value := range []string{"9223372036854775807G", "9007199254740992K", "-1M"} {
+		if _, err := parseSize(value); err == nil {
+			t.Errorf("accepted %q", value)
+		}
+	}
+	if got, err := parseSize("512K"); err != nil || got != 512<<10 {
+		t.Fatalf("got=%d err=%v", got, err)
+	}
+}

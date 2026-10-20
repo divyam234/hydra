@@ -1,0 +1,50 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            go: '1.25.x'
+          - os: ubuntu-latest
+            go: stable
+          - os: windows-latest
+            go: stable
+          - os: macos-latest
+            go: stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Race tests
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Benchmark harness tests
+        run: python -m unittest discover -s scripts -p 'test_*.py'
+      - name: Real-process resume integrity audit
+        if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
+        run: |
+          go build -o "$RUNNER_TEMP/hydra-resume-audit" ./cmd/hydra
+          python scripts/audit_resume.py --hydra "$RUNNER_TEMP/hydra-resume-audit" --output "$RUNNER_TEMP/resume-audit.json"
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
+        with:
+          name: resume-integrity-audit
+          path: ${{ runner.temp }}/resume-audit.json
+          if-no-files-found: ignore

@@ -38,6 +38,7 @@ func TestDownloadRejects204NoContent(t *testing.T) {
 func TestSegmentedDownloadRejectsMissingContentRange(t *testing.T) {
 	data := []byte("0123456789abcdef")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"test-object"`)
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Length", fmt.Sprint(len(data)))
 		if r.Method == http.MethodHead {
@@ -64,6 +65,7 @@ func TestSegmentedDownloadRejectsMissingContentRange(t *testing.T) {
 func TestResume204PreservesPartAndReturnsHTTPError(t *testing.T) {
 	data := []byte("0123456789abcdef")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"test-object"`)
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Length", fmt.Sprint(len(data)))
 		if r.Method == http.MethodHead {
@@ -85,6 +87,7 @@ func TestResume204PreservesPartAndReturnsHTTPError(t *testing.T) {
 	if err := os.WriteFile(part, prefix, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	seedSingleCheckpoint(t, final, srv.URL+"/resume.bin", len(data))
 
 	_, err := Download(context.Background(), Request{URLs: []string{srv.URL + "/resume.bin"}, Out: final}, Options{Split: 1})
 	var statusErr *HTTPStatusError
@@ -104,6 +107,7 @@ func TestResumeRestartsSafelyWhenServerIgnoresRange(t *testing.T) {
 	data := []byte("0123456789abcdef")
 	var ranged bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"test-object"`)
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Length", fmt.Sprint(len(data)))
 		if r.Method == http.MethodHead {
@@ -123,6 +127,7 @@ func TestResumeRestartsSafelyWhenServerIgnoresRange(t *testing.T) {
 	if err := os.WriteFile(partPath(final), data[:8], 0o644); err != nil {
 		t.Fatal(err)
 	}
+	seedSingleCheckpoint(t, final, srv.URL+"/restart.bin", len(data))
 
 	res, err := Download(context.Background(), Request{URLs: []string{srv.URL + "/restart.bin"}, Out: final}, Options{Split: 1})
 	if err != nil {

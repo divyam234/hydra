@@ -3,7 +3,9 @@ package hydra
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,7 +22,13 @@ type JobResult struct {
 type job struct {
 	id     JobID
 	req    Request
-	result chan JobResult
+	result *jobResult
+}
+
+// Closing done publishes value to every waiter, including future Wait calls.
+type jobResult struct {
+	done  chan struct{}
+	value JobResult
 }
 
 // Manager is a small production-oriented queue around Downloader. It is meant
@@ -32,8 +40,10 @@ type Manager struct {
 	closed     chan struct{}
 	wg         sync.WaitGroup
 	mu         sync.Mutex
-	results    map[JobID]chan JobResult
+	results    map[JobID]*jobResult
 	cancel     context.CancelFunc
+	closeOnce  sync.Once
+	ctx        context.Context
 }
 
 func NewManager(ctx context.Context, options Options) (*Manager, error) {
@@ -50,8 +60,9 @@ func NewManager(ctx context.Context, options Options) (*Manager, error) {
 		downloader: d,
 		jobs:       make(chan job),
 		closed:     make(chan struct{}),
-		results:    make(map[JobID]chan JobResult),
+		results:    make(map[JobID]*jobResult),
 		cancel:     cancel,
+		ctx:        ctx,
 	}
 	for i := 0; i < opts.MaxConcurrentDownloads; i++ {
 		m.wg.Add(1)
@@ -65,8 +76,12 @@ func (m *Manager) Enqueue(req Request) (JobID, error) {
 		req.ID = newJobID()
 	}
 	id := JobID(req.ID)
-	ch := make(chan JobResult, 1)
+	ch := &jobResult{done: make(chan struct{})}
 	m.mu.Lock()
+	if m.ctx.Err() != nil {
+		m.mu.Unlock()
+		return "", errors.New("manager is closed")
+	}
 	if _, exists := m.results[id]; exists {
 		m.mu.Unlock()
 		return "", errors.New("duplicate job id: " + string(id))
@@ -76,10 +91,12 @@ func (m *Manager) Enqueue(req Request) (JobID, error) {
 
 	j := job{id: id, req: req, result: ch}
 	select {
-	case <-m.closed:
+	case <-m.ctx.Done():
+		m.mu.Lock()
+		delete(m.results, id)
+		m.mu.Unlock()
 		return "", errors.New("manager is closed")
 	case m.jobs <- j:
-		m.downloader.emitEvent(Event{Kind: EventQueued, ID: string(id), Time: time.Now()})
 		return id, nil
 	}
 }
@@ -92,8 +109,8 @@ func (m *Manager) Wait(ctx context.Context, id JobID) (Result, error) {
 		return Result{}, errors.New("unknown job id: " + string(id))
 	}
 	select {
-	case rr := <-ch:
-		return rr.Result, rr.Err
+	case <-ch.done:
+		return ch.value.Result, ch.value.Err
 	case <-ctx.Done():
 		return Result{}, ctx.Err()
 	}
@@ -109,28 +126,41 @@ func (m *Manager) WaitAll(ctx context.Context, ids ...JobID) []JobResult {
 }
 
 func (m *Manager) Close() error {
-	select {
-	case <-m.closed:
-		return nil
-	default:
+	m.closeOnce.Do(func() {
 		close(m.closed)
 		m.cancel()
-		close(m.jobs)
 		m.wg.Wait()
-		return nil
-	}
+		if m.downloader.opts.Transport == nil {
+			m.downloader.CloseIdleConnections()
+		}
+	})
+	return nil
 }
 
 func (m *Manager) worker(ctx context.Context) {
 	defer m.wg.Done()
-	for j := range m.jobs {
+	for {
+		var j job
+		select {
+		case <-ctx.Done():
+			return
+		case j = <-m.jobs:
+		}
+		m.downloader.emitEvent(Event{Kind: EventQueued, ID: string(j.id), Time: time.Now()})
 		res, err := m.downloader.Download(ctx, j.req)
 		jr := JobResult{ID: j.id, Result: res, Err: err}
-		j.result <- jr
-		close(j.result)
+		j.result.value = jr
+		close(j.result.done)
 	}
 }
 
+var jobSequence atomic.Uint64
+
 func newJobID() string {
-	return time.Now().UTC().Format("20060102T150405.000000000")
+	// Clock timestamps alone collide under concurrent enqueue/download calls.
+	var buf [64]byte
+	id := time.Now().UTC().AppendFormat(buf[:0], "20060102T150405.000000000")
+	id = append(id, '-')
+	id = strconv.AppendUint(id, jobSequence.Add(1), 16)
+	return string(id)
 }

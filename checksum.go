@@ -36,11 +36,8 @@ func ParseChecksum(s string) (Checksum, error) {
 	if c.Algorithm == "" || c.Value == "" {
 		return Checksum{}, fmt.Errorf("checksum must be algorithm:hex")
 	}
-	if _, err := c.newHash(); err != nil {
+	if _, err := c.validatedHash(); err != nil {
 		return Checksum{}, err
-	}
-	if _, err := hex.DecodeString(c.Value); err != nil {
-		return Checksum{}, fmt.Errorf("checksum value is not hex: %w", err)
 	}
 	return c, nil
 }
@@ -70,12 +67,27 @@ func (c Checksum) newHash() (hash.Hash, error) {
 	}
 }
 
+func (c Checksum) validatedHash() (hash.Hash, error) {
+	c = c.normalized()
+	h, err := c.newHash()
+	if err != nil {
+		return nil, err
+	}
+	if len(c.Value) != h.Size()*2 {
+		return nil, fmt.Errorf("checksum length: %s requires %d hex characters", c.Algorithm, h.Size()*2)
+	}
+	if _, err := hex.DecodeString(c.Value); err != nil {
+		return nil, fmt.Errorf("checksum value is not hex: %w", err)
+	}
+	return h, nil
+}
+
 func (c Checksum) VerifyFile(path string) (actual string, err error) {
 	c = c.normalized()
 	if c.Empty() {
 		return "", nil
 	}
-	h, err := c.newHash()
+	h, err := c.validatedHash()
 	if err != nil {
 		return "", err
 	}

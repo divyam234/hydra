@@ -43,16 +43,16 @@ func parseContentRange(value string) (contentRange, error) {
 func validateContentRange(value string, wantStart, wantEnd, wantTotal int64) error {
 	cr, err := parseContentRange(value)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrInvalidContentRange, err)
 	}
 	if cr.Start != wantStart {
-		return fmt.Errorf("unexpected content-range start: got %d want %d", cr.Start, wantStart)
+		return fmt.Errorf("%w: unexpected start: got %d want %d", ErrInvalidContentRange, cr.Start, wantStart)
 	}
 	if wantEnd >= 0 && cr.End != wantEnd {
-		return fmt.Errorf("unexpected content-range end: got %d want %d", cr.End, wantEnd)
+		return fmt.Errorf("%w: unexpected end: got %d want %d", ErrInvalidContentRange, cr.End, wantEnd)
 	}
 	if wantTotal > 0 && cr.Total != wantTotal {
-		return fmt.Errorf("unexpected content-range total: got %d want %d", cr.Total, wantTotal)
+		return fmt.Errorf("%w: unexpected total: got %d want %d", ErrInvalidContentRange, cr.Total, wantTotal)
 	}
 	return nil
 }

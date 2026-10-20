@@ -109,7 +109,7 @@ func TestSegmentedResumeFromMetadata(t *testing.T) {
 	dir := t.TempDir()
 	final := filepath.Join(dir, "resume.bin")
 
-	info := probeInfo{URL: srv.URL + "/resume.bin", Size: int64(len(data)), AcceptRanges: true}
+	info := probeInfo{URL: srv.URL + "/resume.bin", Size: int64(len(data)), AcceptRanges: true, ETag: `"test-object"`}
 	meta := newMeta([]string{srv.URL + "/resume.bin"}, final, info, 512<<10)
 	if err := ensureParent(final); err != nil {
 		t.Fatal(err)
@@ -153,6 +153,7 @@ func TestSegmentedResumeBitfieldBlockOffset(t *testing.T) {
 	var mu sync.Mutex
 	var starts []int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"test-object"`)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		w.Header().Set("Accept-Ranges", "bytes")
@@ -180,7 +181,7 @@ func TestSegmentedResumeBitfieldBlockOffset(t *testing.T) {
 
 	dir := t.TempDir()
 	final := filepath.Join(dir, "partial.bin")
-	info := probeInfo{URL: srv.URL + "/partial.bin", Size: int64(len(data)), AcceptRanges: true}
+	info := probeInfo{URL: srv.URL + "/partial.bin", Size: int64(len(data)), AcceptRanges: true, ETag: `"test-object"`}
 	meta := newMeta([]string{srv.URL + "/partial.bin"}, final, info, 512<<10)
 	first := meta.pendingPieces(4, 1)[0]
 	resumeAt := first.End + 1
@@ -271,6 +272,7 @@ func testData(n int) []byte {
 
 func rangeServer(data []byte, ranges bool, rangeCount *atomic.Int64) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"test-object"`)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		if ranges {
@@ -419,7 +421,7 @@ func TestSegmentedCancelPersistsResumeState(t *testing.T) {
 	data := testData(8 << 20)
 	var mu sync.Mutex
 	var starts []int64
-	srv := slowRangeServer(data, true, "", &starts, &mu)
+	srv := slowRangeServer(data, true, `"test-object"`, &starts, &mu)
 	defer srv.Close()
 
 	dir := t.TempDir()
@@ -478,6 +480,7 @@ func TestProbeDetectsRangeWhenHeadDoesNotAdvertiseIt(t *testing.T) {
 	data := testData(2 << 20)
 	var ranges atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"test-object"`)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		// Intentionally no Accept-Ranges on HEAD. Some CDNs behave this way.
@@ -515,16 +518,15 @@ func TestProbeDetectsRangeWhenHeadDoesNotAdvertiseIt(t *testing.T) {
 	}
 }
 
-func TestResumeToleratesUnstableValidatorsByDefault(t *testing.T) {
+func TestResumeRestartsOnUnstableValidatorsByDefault(t *testing.T) {
 	data := testData(2 << 20)
 	var mu sync.Mutex
 	var starts []int64
-	var etag atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		w.Header().Set("Accept-Ranges", "bytes")
-		w.Header().Set("ETag", fmt.Sprintf("etag-%d", etag.Add(1)))
+		w.Header().Set("ETag", `"new-etag"`)
 		if r.Method == http.MethodHead {
 			return
 		}
@@ -575,15 +577,17 @@ func TestResumeToleratesUnstableValidatorsByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Resumed {
-		t.Fatal("expected resume despite unstable ETag by default")
+	if res.Resumed {
+		t.Fatal("must not reuse bytes after an ETag change")
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	foundZero := false
 	for _, start := range starts {
-		if start == 0 {
-			t.Fatalf("unstable validator caused restart from zero; starts=%v", starts)
-		}
+		foundZero = foundZero || start == 0
+	}
+	if !foundZero {
+		t.Fatalf("expected restart from zero; starts=%v", starts)
 	}
 }
 

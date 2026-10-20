@@ -1,9 +1,14 @@
 package hydra
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"math/bits"
 	"os"
 	"path/filepath"
@@ -11,7 +16,10 @@ import (
 	"time"
 )
 
-const metaVersionBitfield = 2
+const metaVersionBitfield = 3
+
+// Bound untrusted remote sizes and sidecars, including per-block SHA-256 data.
+const maxResumeMetadataBytes = 64 << 20
 
 type pieceState string
 
@@ -65,18 +73,23 @@ type metaFile struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 
-	// Metadata v2 uses a compact bitfield: one bit per fixed-size
+	// Metadata v3 uses a compact bitfield: one bit per fixed-size
 	// resume block. A set bit means the complete byte range for that block is
-	// already durable on disk. This avoids giant JSON piece arrays and makes
+	// already durable on disk, accompanied by its SHA-256. This avoids JSON piece arrays and makes
 	// resume independent of the current split/concurrency setting.
-	BlockSize  int64  `json:"block_size,omitempty"`
-	BlockCount int    `json:"block_count,omitempty"`
-	Bitfield   string `json:"bitfield,omitempty"`
+	BlockSize   int64  `json:"block_size,omitempty"`
+	BlockCount  int    `json:"block_count,omitempty"`
+	Bitfield    string `json:"bitfield,omitempty"`
+	BlockHashes string `json:"block_hashes,omitempty"`
+	Single      bool   `json:"single,omitempty"`
+	PrefixSize  int64  `json:"prefix_size,omitempty"`
+	PrefixHash  string `json:"prefix_sha256,omitempty"`
 
 	// Pieces is retained only for v1 sidecar migration and omitted for new files.
 	Pieces []piece `json:"pieces,omitempty"`
 
 	bits     []byte     `json:"-"`
+	hashes   []byte     `json:"-"`
 	dirty    bool       `json:"-"`
 	lastSave time.Time  `json:"-"`
 	mu       sync.Mutex `json:"-"`
@@ -140,14 +153,14 @@ func blockCount(size, blockSize int64) int {
 	if blockSize <= 0 {
 		blockSize = DefaultResumeBlockSize
 	}
-	return int((size + blockSize - 1) / blockSize)
+	return int((size-1)/blockSize + 1)
 }
 
 func bitfieldBytes(count int) int {
 	if count <= 0 {
 		return 0
 	}
-	return (count + 7) / 8
+	return (count-1)/8 + 1
 }
 
 func setBit(b []byte, i int) {
@@ -211,7 +224,6 @@ func (m *metaFile) ensureBits() {
 	for i := m.BlockCount; i < len(m.bits)*8; i++ {
 		clearBit(m.bits, i)
 	}
-	m.syncBitfield()
 }
 
 func (m *metaFile) completedBytes() int64 {
@@ -239,14 +251,10 @@ func (m *metaFile) blockSize(i int) int64 {
 		return 0
 	}
 	start := int64(i) * m.BlockSize
-	end := start + m.BlockSize - 1
-	if end >= m.Size {
-		end = m.Size - 1
-	}
-	if end < start {
+	if start >= m.Size {
 		return 0
 	}
-	return end - start + 1
+	return min(m.BlockSize, m.Size-start)
 }
 
 func (m *metaFile) donePieces() int {
@@ -281,6 +289,8 @@ func (m *metaFile) piecesTotal() int {
 // and MinSplitSize, then rounded to resume-block boundaries so a completed bit
 // always represents durable bytes on disk.
 func (m *metaFile) pendingPieces(split int, minSplitSize int64) []piece {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if split < 1 {
 		split = 1
 	}
@@ -311,12 +321,13 @@ func (m *metaFile) pendingPieces(split int, minSplitSize int64) []piece {
 		return nil
 	}
 
-	targetBlocksBySplit := (totalMissingBlocks + split - 1) / split
-	targetBlocksByMinSize := int((minSplitSize + m.BlockSize - 1) / m.BlockSize)
+	targetBlocksBySplit := (totalMissingBlocks-1)/split + 1
+	targetBlocksByMinSize := int((minSplitSize-1)/m.BlockSize + 1)
 	if targetBlocksByMinSize < 1 {
 		targetBlocksByMinSize = 1
 	}
 	targetBlocks := max(targetBlocksBySplit, targetBlocksByMinSize)
+	targetBlocks = min(targetBlocks, m.BlockCount)
 	if targetBlocks < 1 {
 		targetBlocks = 1
 	}
@@ -341,9 +352,9 @@ func (m *metaFile) pendingPieces(split int, minSplitSize int64) []piece {
 				endBlock = runEnd
 			}
 			start := int64(b) * m.BlockSize
-			end := int64(endBlock)*m.BlockSize - 1
-			if end >= m.Size {
-				end = m.Size - 1
+			end := m.Size - 1
+			if endBlock < m.BlockCount {
+				end = int64(endBlock)*m.BlockSize - 1
 			}
 			out = append(out, piece{Index: jobIndex, Start: start, End: end, State: piecePending})
 			jobIndex++
@@ -357,6 +368,10 @@ func (m *metaFile) pendingPieces(split int, minSplitSize int64) []piece {
 // [start, end] and returns the number of newly completed blocks. It marks the metadata dirty but does not fsync immediately; callers use
 // saveIfDue to batch sidecar writes and avoid blocking every copy buffer.
 func (m *metaFile) markRangeComplete(start, end int64, sidecar string) (int, error) {
+	return m.markRangeCompleteFromFile(nil, start, end, sidecar)
+}
+
+func (m *metaFile) markRangeCompleteFromFile(f *os.File, start, end int64, sidecar string) (int, error) {
 	_ = sidecar // kept in the signature for older internal call sites; saving is batched by saveIfDue.
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -380,6 +395,14 @@ func (m *metaFile) markRangeComplete(start, end int64, sidecar string) (int, err
 		blockStart := int64(i) * m.BlockSize
 		blockEnd := blockStart + m.blockSize(i) - 1
 		if start <= blockStart && end >= blockEnd && !testBit(m.bits, i) {
+			if f != nil {
+				digest, err := hashFileBlock(f, blockStart, m.blockSize(i))
+				if err != nil {
+					return changed, err
+				}
+				m.ensureHashes()
+				copy(m.hashes[i*sha256.Size:], digest[:])
+			}
 			setBit(m.bits, i)
 			changed++
 		}
@@ -387,13 +410,16 @@ func (m *metaFile) markRangeComplete(start, end int64, sidecar string) (int, err
 	if changed == 0 {
 		return 0, nil
 	}
-	m.syncBitfield()
 	m.UpdatedAt = time.Now().UTC()
 	m.dirty = true
 	return changed, nil
 }
 
 func (m *metaFile) saveIfDue(sidecar string, interval time.Duration) error {
+	return m.saveIfDueAfterSync(sidecar, interval, nil)
+}
+
+func (m *metaFile) saveIfDueAfterSync(sidecar string, interval time.Duration, syncData func() error) error {
 	now := time.Now().UTC()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -402,6 +428,13 @@ func (m *metaFile) saveIfDue(sidecar string, interval time.Duration) error {
 	}
 	if interval > 0 && !m.lastSave.IsZero() && now.Sub(m.lastSave) < interval {
 		return nil
+	}
+	// Hold the metadata lock across data sync and snapshotting: no new completed
+	// bits may be published until their file bytes have been made durable.
+	if syncData != nil {
+		if err := syncData(); err != nil {
+			return err
+		}
 	}
 	m.UpdatedAt = now
 	if err := m.saveLocked(sidecar); err != nil {
@@ -418,6 +451,17 @@ func (m *metaFile) markDone(index int, sidecar string) error {
 	now := time.Now().UTC()
 	if m.Version == metaVersionBitfield {
 		m.ensureBits()
+		// Internal helper used by fixtures and legacy callers. Production marks
+		// blocks via markRangeCompleteFromFile with its already-open output.
+		if f, err := os.Open(m.Path); err == nil {
+			digest, hashErr := hashFileBlock(f, int64(index)*m.BlockSize, m.blockSize(index))
+			_ = f.Close()
+			if hashErr != nil {
+				return hashErr
+			}
+			m.ensureHashes()
+			copy(m.hashes[index*sha256.Size:], digest[:])
+		}
 		setBit(m.bits, index)
 		m.syncBitfield()
 		m.UpdatedAt = now
@@ -445,35 +489,73 @@ func (m *metaFile) markDone(index int, sidecar string) error {
 	return nil
 }
 
-func (m *metaFile) compatible(path string, info probeInfo, strictValidators bool) bool {
+func (m *metaFile) compatible(path string, info probeInfo) bool {
 	if m.Path != path || m.Size != info.Size {
 		return false
 	}
 	if m.Version != metaVersionBitfield || m.BlockSize <= 0 || m.BlockCount <= 0 || len(m.bits) != bitfieldBytes(m.BlockCount) {
 		return false
 	}
-	if strictValidators {
-		if m.ETag != "" && info.ETag != "" && m.ETag != info.ETag {
-			return false
-		}
-		if m.LastModified != "" && info.LastModified != "" && m.LastModified != info.LastModified {
-			return false
-		}
+	// Never mix known different representations, even in the default mode.
+	// Disappearing validators are also a loss of the old identity guarantee.
+	if m.ETag != info.ETag || m.LastModified != info.LastModified {
+		return false
+	}
+	if !strongETag(info.ETag) {
+		return false
 	}
 	return true
 }
 
 func loadMeta(sidecar string) (*metaFile, error) {
-	b, err := os.ReadFile(sidecar)
+	f, err := os.Open(sidecar)
 	if err != nil {
 		return nil, err
+	}
+	defer f.Close()
+	const maxSidecarBytes = 2 * maxResumeMetadataBytes
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if st.Size() > maxSidecarBytes {
+		return nil, errors.New("resume sidecar exceeds 128 MiB")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxSidecarBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxSidecarBytes {
+		return nil, errors.New("resume sidecar exceeds 128 MiB")
 	}
 	var m metaFile
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, err
 	}
+	if m.Version != 0 && m.Version != 1 && m.Version != 2 && m.Version != metaVersionBitfield {
+		return nil, errors.New("unsupported resume metadata version")
+	}
+	if err := validateMetadataSize(m.Size, m.BlockSize); err != nil {
+		return nil, err
+	}
 	m.normalize()
 	return &m, nil
+}
+
+func validateMetadataSize(size, blockSize int64) error {
+	if size < 0 {
+		return errors.New("negative resume metadata size")
+	}
+	if blockSize <= 0 {
+		blockSize = DefaultResumeBlockSize
+	}
+	if size > 0 && (size-1)/blockSize >= int64(maxResumeMetadataBytes)*8 {
+		return errors.New("resume bitfield exceeds 64 MiB; increase ResumeBlockSize")
+	}
+	if size > 0 && (size-1)/blockSize >= int64(maxResumeMetadataBytes)/(sha256.Size+1) {
+		return errors.New("resume integrity metadata exceeds 64 MiB; increase ResumeBlockSize")
+	}
+	return nil
 }
 
 func (m *metaFile) normalize() {
@@ -484,10 +566,18 @@ func (m *metaFile) normalize() {
 				m.bits = decoded
 			}
 		}
+		if decoded, err := base64.StdEncoding.DecodeString(m.BlockHashes); err == nil && len(decoded) == blockCount(m.Size, m.BlockSize)*sha256.Size {
+			m.hashes = decoded
+		}
 		m.ensureBits()
 		return
 	}
-	m.migrateLegacyPieces()
+	// Old checkpoints did not authenticate completed blocks. Restart rather
+	// than carrying forward potentially corrupted data from those versions.
+	m.Version = metaVersionBitfield
+	m.bits = nil
+	m.Pieces = nil
+	m.ensureBits()
 }
 
 func (m *metaFile) migrateLegacyPieces() {
@@ -527,6 +617,8 @@ func (m *metaFile) save(sidecar string) error {
 func (m *metaFile) saveLocked(sidecar string) error {
 	if m.Version == metaVersionBitfield {
 		m.ensureBits()
+		m.syncBitfield()
+		m.BlockHashes = base64.StdEncoding.EncodeToString(m.hashes)
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -554,16 +646,49 @@ func (m *metaFile) saveLocked(sidecar string) error {
 	return syncDir(filepath.Dir(sidecar))
 }
 
-func syncDir(dir string) error {
-	if dir == "" || dir == "." {
-		dir = "."
+func (m *metaFile) ensureHashes() {
+	if len(m.hashes) != m.BlockCount*sha256.Size {
+		m.hashes = make([]byte, m.BlockCount*sha256.Size)
 	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return nil // directory fsync is best effort across platforms/filesystems.
+}
+
+func hashFileBlock(f *os.File, start, size int64) ([sha256.Size]byte, error) {
+	h := sha256.New()
+	n, err := io.Copy(h, io.NewSectionReader(f, start, size))
+	if err == nil && n != size {
+		err = io.ErrUnexpectedEOF
 	}
-	defer d.Close()
-	return d.Sync()
+	var digest [sha256.Size]byte
+	copy(digest[:], h.Sum(nil))
+	return digest, err
+}
+
+// Never trust a completion bit without checking the actual saved bytes. A
+// damaged block is made pending and overwritten, not published or skipped.
+func (m *metaFile) verifyCompletedBlocks(ctx context.Context, f *os.File) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := 0; i < m.BlockCount; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !testBit(m.bits, i) {
+			continue
+		}
+		valid := len(m.hashes) == m.BlockCount*sha256.Size
+		if valid {
+			digest, err := hashFileBlock(f, int64(i)*m.BlockSize, m.blockSize(i))
+			if err != nil {
+				return err
+			}
+			valid = bytes.Equal(digest[:], m.hashes[i*sha256.Size:(i+1)*sha256.Size])
+		}
+		if !valid {
+			clearBit(m.bits, i)
+			m.dirty = true
+		}
+	}
+	return nil
 }
 
 func sidecarPath(path string) string { return path + ".hydra" }
@@ -578,7 +703,17 @@ func ensureParent(path string) error {
 }
 
 func removeIfExists(path string) error {
-	err := os.Remove(path)
+	st, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if st.IsDir() {
+		return fmt.Errorf("refusing to remove directory: %s", path)
+	}
+	err = os.Remove(path)
 	if err == nil || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

@@ -6,6 +6,7 @@
 coverage.out
 coverage.html
 *.test
+__pycache__/
 
 # IDE and editor files
 .idea/
