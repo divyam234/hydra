@@ -92,6 +92,21 @@ For large files on slow connections, increase the request timeout, for example `
 
 Run `hydra --help` for all options. If you built from source, use `./hydra` instead of `hydra`.
 
+## Benchmarks
+
+Hydra engine at `61358c5` vs aria2c 1.37.0 on Linux/ARM64, built with Go 1.26.9 (`CGO_ENABLED=0`). Median throughput over three runs downloading a 128 MiB file from a local HTTP server; higher is better.
+
+| Local source | Connections | Hydra | aria2c |
+| --- | ---: | ---: | ---: |
+| Unrestricted | 1 | 408.7 MiB/s | 233.0 MiB/s |
+| Unrestricted | 8 | 305.7 MiB/s | 239.7 MiB/s |
+| Limited to 8 MiB/s per connection | 1 | 8.0 MiB/s | 7.9 MiB/s |
+| Limited to 8 MiB/s per connection | 8 | 50.6 MiB/s | 59.2 MiB/s |
+
+Timing includes process startup and file sync; all 24 downloads passed SHA-256 verification after timing. These loopback results include server and filesystem overhead, not internet performance. Hydra was faster in the unrestricted tests; aria2c was faster with eight throttled connections.
+
+[Methodology and reproduction](BENCHMARKS.md#current-version-comparison) · [Raw results](docs/benchmark-local.json)
+
 ## Documentation
 
 - [Go API usage](docs/go-api.md)

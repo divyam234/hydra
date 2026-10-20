@@ -1,5 +1,33 @@
 # Correctness and performance audit
 
+## Current-version comparison
+
+Measured on 2026-10-20 using the Hydra engine at `61358c5`, Go 1.26.9 with `CGO_ENABLED=0`, and aria2c 1.37.0 on Linux 7.2.10 / ARM64. The only working-tree change at build time was the benchmark server's strong ETag header; downloader source was unchanged. The ETag identifies the deterministic payload and allows current Hydra to use segmented downloads rather than fall back to a single stream.
+
+128 MiB deterministic payload served over HTTP/1.1 loopback. Medians of three runs, in MiB/s:
+
+| Source | Configured connections | Hydra | aria2c |
+| --- | ---: | ---: | ---: |
+| Unrestricted | 1 | 408.7 | 233.0 |
+| Unrestricted | 8 | 305.7 | 239.7 |
+| 8 MiB/s per connection | 1 | 8.0 | 7.9 |
+| 8 MiB/s per connection | 8 | 50.6 | 59.2 |
+
+All 24 timed downloads passed SHA-256 verification. Timing includes startup and output file sync; checksum verification is outside the timed interval. Tool ordering rotates between repetitions. The filesystem baseline was 786.9 MiB/s for buffered writes plus fsync and 6,768.3 MiB/s for cached reads, not physical disk bandwidth.
+
+Hydra won the unrestricted medians, while aria2c won the eight-connection throttled median. Hydra's throttled eight-connection samples ranged from 50.5 to 60.3 MiB/s; its unrestricted eight-connection result was slower than its single-connection result. More connections are not always faster. These three-sample local tests do not establish internet throughput or a universal performance advantage.
+
+[Raw timings, commands, executable hashes, and build information](docs/benchmark-local.json) are checked into the repository. The binary reports a dirty working tree because of the benchmark-server change described above.
+
+Reproduce with Python 3.9+, Go, and aria2c installed:
+
+```sh
+CGO_ENABLED=0 go build -o /tmp/opencode/hydra-readme-bench ./cmd/hydra
+python3 scripts/benchmark.py --hydra /tmp/opencode/hydra-readme-bench --directory /tmp/opencode --size-mib 128 --repeats 3 --output /tmp/opencode/hydra-readme-benchmark.json
+```
+
+Create `/tmp/opencode` first if needed, or substitute an existing directory on the filesystem you want to measure. The audit sections below retain earlier results and their limitations; they are not measurements of this revision.
+
 ## Scope and evidence
 
 This audit covers the existing HTTP/HTTPS engine, CLI, resume metadata, queue manager, proxies, progress reporting, and local filesystem/HTTP performance. It does not certify that all bugs are gone or that Hydra is the fastest downloader on every workload.

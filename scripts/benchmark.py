@@ -105,6 +105,7 @@ def main():
             self.send_response(206 if value else 200)
             self.send_header("Content-Length", str(end - start + 1))
             self.send_header("Accept-Ranges", "bytes")
+            self.send_header("ETag", f'"{expected}"')
             if value:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{len(payload)}")
             self.end_headers()
