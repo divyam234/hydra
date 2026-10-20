@@ -92,35 +92,7 @@ For large files on slow connections, increase the request timeout, for example `
 
 Run `hydra --help` for all options. If you built from source, use `./hydra` instead of `hydra`.
 
-## Go package
+## Documentation
 
-```bash
-go get github.com/divyam234/hydra
-```
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"log"
-
-	"github.com/divyam234/hydra"
-)
-
-func main() {
-	result, err := hydra.Download(context.Background(), hydra.Request{
-		URLs: []string{"https://example.com/file.zip"},
-		Dir:  "downloads",
-	}, hydra.DefaultOptions())
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(result.Path)
-}
-```
-
-Use `Options.OnProgress` for progress updates, `Options.OnEvent` for download events, and `NewManager` to queue multiple downloads.
-
-[API documentation](https://pkg.go.dev/github.com/divyam234/hydra) · [Benchmarks](BENCHMARKS.md)
+- [Go API usage](docs/go-api.md)
+- [Benchmarks](BENCHMARKS.md)
