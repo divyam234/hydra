@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -473,6 +474,116 @@ func TestSegmentedCancelPersistsResumeState(t *testing.T) {
 		if start == 0 {
 			t.Fatalf("resume restarted piece 0 from byte 0; starts=%v", starts)
 		}
+	}
+}
+
+func TestCancellationPreservesOneTerminalSnapshot(t *testing.T) {
+	for _, split := range []int{1, 4} {
+		t.Run(fmt.Sprint(split), func(t *testing.T) {
+			data := testData(4 << 20)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			retried := make(chan struct{})
+			var first atomic.Bool
+			var retryOnce sync.Once
+			origin := rangeServer(data, true, nil)
+			defer origin.Close()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodHead {
+					if first.CompareAndSwap(false, true) {
+						http.Error(w, "retry once", http.StatusServiceUnavailable)
+						return
+					}
+					select {
+					case <-retried:
+					case <-r.Context().Done():
+						return
+					}
+				}
+				origin.Config.Handler.ServeHTTP(w, r)
+			}))
+			defer srv.Close()
+			var mu sync.Mutex
+			var terminal Progress
+			var terminalEvent Event
+			var highWater int64
+			var snapshots, events int
+			var retryEvents int64
+			_, err := Download(ctx, Request{URLs: []string{srv.URL}, Dir: t.TempDir()}, Options{
+				Split: split, MaxConnectionsPerServer: split, MinSplitSize: 256 << 10,
+				ResumeBlockSize: 64 << 10, ProgressInterval: time.Nanosecond,
+				MaxRetries: 1, RetryWait: time.Millisecond,
+				OnProgress: func(p Progress) {
+					mu.Lock()
+					defer mu.Unlock()
+					if p.State == StateDownloading {
+						highWater = max(highWater, p.Completed)
+						if p.Completed >= 32<<10 {
+							cancel()
+						}
+					}
+					if p.State == StateCancelled || p.State == StateFailed {
+						snapshots++
+						terminal = p
+					}
+				},
+				OnEvent: func(e Event) {
+					if e.Kind == EventRetrying {
+						mu.Lock()
+						retryEvents++
+						mu.Unlock()
+						retryOnce.Do(func() { close(retried) })
+					}
+					if e.Kind == EventCancelled || e.Kind == EventFailed {
+						mu.Lock()
+						events++
+						terminalEvent = e
+						mu.Unlock()
+					}
+				},
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error=%v, want cancellation", err)
+			}
+			if snapshots != 1 || events != 1 || terminal.State != StateCancelled || terminalEvent.Kind != EventCancelled {
+				t.Fatalf("terminal snapshots=%d events=%d progress=%+v event=%+v", snapshots, events, terminal, terminalEvent)
+			}
+			if terminal.Completed != highWater || terminal.Completed < 32<<10 || terminal.Downloaded != terminal.Completed ||
+				terminal.Total != int64(len(data)) || terminal.Connections != split || terminal.Active != 0 || terminal.Retries != retryEvents {
+				t.Fatalf("cancellation lost transfer counters: highWater=%d progress=%+v", highWater, terminal)
+			}
+			if terminalEvent.Completed != terminal.Completed || terminalEvent.Total != terminal.Total ||
+				terminalEvent.Progress.Completed != terminal.Completed || terminalEvent.Progress.Retries != retryEvents {
+				t.Fatalf("event lost transfer counters: progress=%+v event=%+v", terminal, terminalEvent)
+			}
+		})
+	}
+}
+
+func TestCancellationDuringProbeIsReportedOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var snapshots, events int
+	_, err := Download(ctx, Request{URLs: []string{"http://127.0.0.1:1/file"}, Dir: t.TempDir()}, Options{
+		OnProgress: func(p Progress) {
+			if p.State == StateProbing {
+				cancel()
+			}
+			if p.State == StateCancelled {
+				snapshots++
+			}
+		},
+		OnEvent: func(e Event) {
+			if e.Kind == EventCancelled {
+				events++
+			}
+			if e.Kind == EventFailed {
+				t.Errorf("user cancellation reported as failure: %+v", e)
+			}
+		},
+	})
+	if !errors.Is(err, context.Canceled) || snapshots != 1 || events != 1 {
+		t.Fatalf("error=%v cancelled snapshots=%d events=%d", err, snapshots, events)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"math"
@@ -130,6 +131,10 @@ func main() {
 
 	res, err := hydra.Download(ctx, hydra.Request{URLs: flag.Args(), Dir: *dir, Out: out, Checksum: checksum}, opts)
 	if err != nil {
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			// The downloader has already reported the user-requested cancellation.
+			os.Exit(1)
+		}
 		if *jsonEvents && terminalEvent.Load() {
 			os.Exit(1)
 		}

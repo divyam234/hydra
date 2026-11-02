@@ -1,6 +1,75 @@
 # Correctness and performance audit
 
-## Current-version comparison
+## CPU optimization comparison (2026-11-02)
+
+Linux 7.2.10 / ARM64, Go 1.26.10, **`CGO_ENABLED=0` for both binaries**.
+Baseline: an archive of unmodified `2c14f819a573`; optimized: the working tree
+with per-output serialized range writes and pooled 256 KiB resume-hash read
+buffers. Both builds used `-buildvcs=false`. Network reads remain parallel.
+Resume hashes still cover bytes reread from the output file; checkpoint
+syncing, retries, and progress accounting remain enabled. These measurements
+replace the earlier `CGO_ENABLED=1` comparison.
+
+Unrestricted HTTP/1.1 loopback, 1 GiB position-dependent deterministic payload,
+quiet CLI, default 1 MiB resume blocks. Medians of three downloads per binary
+and connection count, with before/after ordering alternated:
+
+| Connections | Before CPU s/GiB | After CPU s/GiB | Before MiB/s | After MiB/s |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.804 | 0.851 | 658.9 | 664.8 |
+| 5 | 3.642 | 2.519 | 423.1 | 418.1 |
+| 8 | 3.820 | 2.498 | 435.2 | 426.8 |
+
+CPU is child-process user + system time divided by downloaded GiB, not a
+whole-machine utilization percentage. Timing includes process startup and
+output syncing; independent SHA-256 verification is outside timing. All 18
+downloads passed verification. Source-file reads are cached; these are not
+physical disk or internet bandwidth measurements.
+
+The five- and eight-connection medians used 31% and 35% less CPU per GiB,
+respectively, with about 1% and 2% lower throughput. Single-stream transfer
+code is unchanged; its measured CPU median increased about 6%, so no
+single-stream CPU improvement is established. Multiple connections still cost
+more than one: segmented transfers retain their per-block integrity hashing
+and rereads. Three-sample local results do not predict the CPU percentage or
+throughput of a particular remote HTTPS download, and are not a controlled
+comparison of CGO enabled versus disabled.
+
+The earlier five-connection CPU profile, collected with `CGO_ENABLED=1`,
+attributed about 58% of CPU to
+`WriteAt`/`pwrite`, 16% to socket reads, 15% to hardware-accelerated SHA-256,
+and 5% to hash-input file rereads. Serializing writes moves write contention
+out of the kernel while retaining parallel HTTP connections. Reusing larger
+hash-read buffers reduces read calls and temporary allocations without
+removing the on-disk integrity check. A short-read coalescing experiment was
+rejected because it did not consistently reduce CPU.
+
+Bandwidth-limited smoke comparison: 128 MiB payload, 8 MiB/s per connection,
+progress enabled with stderr written to a log, two runs per binary and
+configured connection count. Medians:
+
+| Configured connections | Before CPU s/GiB | After CPU s/GiB | Before MiB/s | After MiB/s |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 1.817 | 1.871 | 7.95 | 7.96 |
+| 5 | 2.926 | 2.748 | 25.54 | 25.53 |
+| 8 | 2.853 | 2.817 | 50.37 | 50.30 |
+
+All 12 bandwidth-limited outputs passed SHA-256 verification. Configured
+connections are a ceiling, not a guarantee of full utilization: the default
+20 MiB minimum split size and the tail of a small transfer limit parallelism.
+These short runs establish no obvious throughput regression in the tested
+bandwidth-limited workload, not a statistically established CPU improvement.
+Progress callbacks ran, but interactive terminal rendering was not measured.
+
+Earlier source verification passed `go test -race ./...` (which required
+`CGO_ENABLED=1`) and `go vet ./...`, including interrupted/resumed downloads
+and partial-read/error boundary regressions. Neither check was part of the
+CGO-disabled timed workload; no race-enabled binary was benchmarked.
+[Raw measurements, payload generation, commands, and executable build identities](docs/benchmark-cpu.json)
+record both workload comparisons. The Go API, CLI flags, resume metadata
+format, and single-stream copy behavior are unchanged.
+
+## Previous throughput comparison (2026-10-20)
 
 Measured on 2026-10-20 using the Hydra engine at `61358c5`, Go 1.26.9 with `CGO_ENABLED=0`, and aria2c 1.37.0 on Linux 7.2.10 / ARM64. The only working-tree change at build time was the benchmark server's strong ETag header; downloader source was unchanged. The ETag identifies the deterministic payload and allows current Hydra to use segmented downloads rather than fall back to a single stream.
 

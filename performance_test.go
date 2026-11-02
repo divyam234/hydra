@@ -3,6 +3,7 @@ package hydra
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -144,5 +145,106 @@ func BenchmarkCopyWithProgress(b *testing.B) {
 		if _, err := copyWithProgress(io.Discard, bytes.NewReader(data), buf, tracker); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// Return a terminal error together with the final short read, as network
+// readers may do on EOF, cancellation, or a broken connection.
+type terminalChunkReader struct {
+	data []byte
+	err  error
+}
+
+func (r *terminalChunkReader) Read(p []byte) (int, error) {
+	n := min(len(p), min(3, len(r.data)))
+	copy(p, r.data[:n])
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, r.err
+	}
+	return n, nil
+}
+
+func TestCopyPreservesPartialReadOnError(t *testing.T) {
+	broken := errors.New("connection interrupted")
+	for _, terminal := range []error{io.EOF, io.ErrUnexpectedEOF, broken} {
+		for _, ranged := range []bool{false, true} {
+			name := terminal.Error() + "/single"
+			if ranged {
+				name = terminal.Error() + "/range"
+			}
+			t.Run(name, func(t *testing.T) {
+				data := []byte("partial bytes")
+				reader := &terminalChunkReader{data: data, err: terminal}
+				tracker := newProgressTracker("copy", 32, 1, 1, "", time.Hour, nil)
+				var got []byte
+				var written int64
+				var err error
+				wantErr := terminal
+				if ranged {
+					path := filepath.Join(t.TempDir(), "file")
+					f, openErr := os.Create(path)
+					if openErr != nil {
+						t.Fatal(openErr)
+					}
+					defer f.Close()
+					var checkpoint int64
+					written, err = copyRangeToFile(f, reader, 4, 32, make([]byte, 8), tracker, func(n int64) error {
+						checkpoint = n
+						return nil
+					})
+					if checkpoint != int64(len(data)) {
+						t.Fatalf("checkpoint=%d, want persisted bytes=%d", checkpoint, len(data))
+					}
+					contents, readErr := os.ReadFile(path)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					if len(contents) < 4 || !bytes.Equal(contents[:4], make([]byte, 4)) {
+						t.Fatalf("range prefix modified: %q", contents)
+					}
+					got = contents[4:]
+					if terminal == io.EOF {
+						wantErr = io.ErrUnexpectedEOF
+					}
+				} else {
+					var out bytes.Buffer
+					written, err = copyWithProgress(&out, reader, make([]byte, 8), tracker)
+					got = out.Bytes()
+					if terminal == io.EOF {
+						wantErr = nil
+					}
+				}
+				if !errors.Is(err, wantErr) {
+					t.Fatalf("error=%v, want %v", err, wantErr)
+				}
+				if !bytes.Equal(got, data) || written != int64(len(data)) || tracker.completed.Load() != written {
+					t.Fatalf("output=%q written=%d progress=%d, want %q", got, written, tracker.completed.Load(), data)
+				}
+			})
+		}
+	}
+}
+
+func TestCopyRangeStopsAtExpectedBoundary(t *testing.T) {
+	for _, size := range []int{0, 5, 8, 13} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			f, err := os.Create(filepath.Join(t.TempDir(), "file"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			data := []byte("0123456789abcdef")
+			reader := bytes.NewReader(data)
+			tracker := newProgressTracker("range", int64(size), 1, 1, "", time.Hour, nil)
+			written, err := copyRangeToFile(f, reader, 0, int64(size), make([]byte, 8), tracker, nil)
+			got, readErr := os.ReadFile(f.Name())
+			if err != nil || readErr != nil || written != int64(size) || !bytes.Equal(got, data[:size]) {
+				t.Fatalf("output=%q written=%d error=%v readError=%v", got, written, err, readErr)
+			}
+			if reader.Len() != len(data)-size {
+				t.Fatalf("consumed bytes outside range: remaining=%d", reader.Len())
+			}
+		})
 	}
 }

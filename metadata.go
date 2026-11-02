@@ -652,14 +652,23 @@ func (m *metaFile) ensureHashes() {
 	}
 }
 
+var hashBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, DefaultBufferSize)
+		return &buf
+	},
+}
+
 func hashFileBlock(f *os.File, start, size int64) ([sha256.Size]byte, error) {
+	buf := hashBufferPool.Get().(*[]byte)
+	defer hashBufferPool.Put(buf)
 	h := sha256.New()
-	n, err := io.Copy(h, io.NewSectionReader(f, start, size))
+	n, err := io.CopyBuffer(h, io.NewSectionReader(f, start, size), *buf)
 	if err == nil && n != size {
 		err = io.ErrUnexpectedEOF
 	}
 	var digest [sha256.Size]byte
-	copy(digest[:], h.Sum(nil))
+	h.Sum(digest[:0])
 	return digest, err
 }
 

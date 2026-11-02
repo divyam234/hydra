@@ -158,30 +158,27 @@ func (d *Downloader) Download(ctx context.Context, req Request) (Result, error) 
 	}
 
 	var res Result
+	tracker := newProgressTracker(req.ID, info.Size, connections, 0, finalPath, d.opts.ProgressInterval, d.opts.OnProgress)
 	headers = representationHeaders(headers, info)
 	if connections > 1 {
-		res, err = d.downloadSegmented(ctx, req, headers, info, finalPath, connections, started)
+		res, err = d.downloadSegmented(ctx, req, headers, info, finalPath, connections, started, tracker)
 		if errors.Is(err, ErrServerNoRange) {
 			// Some origins advertise byte ranges but ignore them. Do not fail an
 			// otherwise downloadable object, or publish the preallocated holes.
-			res, err = d.downloadSingle(ctx, req, headers, info, finalPath, false, started)
+			res, err = d.downloadSingle(ctx, req, headers, info, finalPath, false, started, tracker)
 		}
 	} else {
 		// A partial file can try a resume even without Accept-Ranges. A server
 		// returning 200 instead of 206 triggers the safe restart path below.
-		res, err = d.downloadSingle(ctx, req, headers, info, finalPath, info.Size > 0, started)
+		res, err = d.downloadSingle(ctx, req, headers, info, finalPath, info.Size > 0, started, tracker)
 	}
 	if err != nil {
-		state := StateFailed
+		state, kind := StateFailed, EventFailed
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			state = StateCancelled
-			d.emitEvent(Event{Kind: EventCancelled, ID: req.ID, URL: info.URL, Path: finalPath, Error: err.Error(), Time: time.Now()})
-		} else {
-			d.failEvent(req.ID, info.URL, finalPath, started, err)
+			state, kind = StateCancelled, EventCancelled
 		}
-		if d.opts.OnProgress != nil {
-			d.opts.OnProgress(Progress{ID: req.ID, State: state, Path: finalPath, Total: info.Size, StartedAt: started, UpdatedAt: time.Now(), Error: err.Error()})
-		}
+		prog := tracker.emit(state, err.Error(), true)
+		d.emitEvent(Event{Kind: kind, ID: req.ID, URL: info.URL, Path: finalPath, Total: prog.Total, Completed: prog.Completed, Error: err.Error(), Time: prog.UpdatedAt, Progress: prog})
 		return Result{}, err
 	}
 	if !req.Checksum.Empty() {
@@ -295,7 +292,7 @@ func hasResumeState(finalPath string) bool {
 	return false
 }
 
-func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers http.Header, info probeInfo, finalPath string, connections int, started time.Time) (Result, error) {
+func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers http.Header, info probeInfo, finalPath string, connections int, started time.Time, tracker *progressTracker) (Result, error) {
 	if err := validateMetadataSize(info.Size, d.opts.ResumeBlockSize); err != nil {
 		return Result{}, err
 	}
@@ -330,7 +327,8 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 		return Result{}, err
 	}
 
-	tracker := newProgressTracker(req.ID, info.Size, connections, int64(meta.piecesTotal()), finalPath, d.opts.ProgressInterval, d.opts.OnProgress)
+	tracker.started = time.Now()
+	tracker.piecesTotal = int64(meta.piecesTotal())
 	resumedBytes := meta.completedBytes()
 	tracker.setCompleted(resumedBytes)
 	tracker.piecesDone.Store(int64(meta.donePieces()))
@@ -343,6 +341,7 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	output := &rangeFile{File: f}
 	var wg sync.WaitGroup
 	for i := 0; i < connections; i++ {
 		wg.Add(1)
@@ -350,7 +349,7 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 			defer wg.Done()
 			for p := range jobs {
 				tracker.incActive()
-				err := d.downloadPieceWithRetry(ctx, req.ID, req.URLs, headers, f, p, meta, sidecar, tracker, flusher)
+				err := d.downloadPieceWithRetry(ctx, req.ID, req.URLs, headers, output, p, meta, sidecar, tracker, flusher)
 				tracker.decActive()
 				if err != nil {
 					select {
@@ -397,9 +396,6 @@ enqueue:
 		}
 	}
 	if transferErr != nil {
-		if errors.Is(transferErr, context.Canceled) || errors.Is(transferErr, context.DeadlineExceeded) {
-			tracker.emit(StateCancelled, transferErr.Error(), true)
-		}
 		return Result{}, transferErr
 	}
 	if !d.opts.KeepPartFile {
@@ -413,7 +409,7 @@ enqueue:
 	return Result{ID: req.ID, Path: finalPath, URL: info.URL, Size: info.Size, Resumed: resumed, ResumedBytes: resumedBytes, Connections: connections, StartedAt: started}, nil
 }
 
-func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers http.Header, info probeInfo, finalPath string, canResume bool, started time.Time) (Result, error) {
+func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers http.Header, info probeInfo, finalPath string, canResume bool, started time.Time, tracker *progressTracker) (Result, error) {
 	tmp := partPath(finalPath)
 	offset := int64(0)
 	resumed := false
@@ -445,7 +441,10 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 	// A bare .part file has no proven object identity. Never append to it just
 	// because its length is plausible, including when switching transfer modes.
 
-	tracker := newProgressTracker(req.ID, info.Size, 1, 1, finalPath, d.opts.ProgressInterval, d.opts.OnProgress)
+	tracker.started = time.Now()
+	tracker.connections = 1
+	tracker.piecesTotal = 1
+	tracker.piecesDone.Store(0)
 	tracker.setCompleted(offset)
 	tracker.incActive()
 	d.emitEvent(Event{Kind: EventDownloading, ID: req.ID, URL: info.URL, Path: finalPath, Time: time.Now()})
@@ -471,9 +470,6 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 			if saveErr := saveSingleResume(tmp, finalPath, req.URLs, info); saveErr != nil {
 				return Result{}, saveErr
 			}
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			tracker.emit(StateCancelled, err.Error(), true)
 		}
 		return Result{}, err
 	}
@@ -508,7 +504,7 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 	return Result{ID: req.ID, Path: finalPath, URL: info.URL, Size: size, Resumed: resumed, ResumedBytes: offset, Connections: 1, StartedAt: started}, nil
 }
 
-func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls []string, headers http.Header, f *os.File, p piece, meta *metaFile, sidecar string, tracker *progressTracker, flusher *metadataFlusher) error {
+func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls []string, headers http.Header, f *rangeFile, p piece, meta *metaFile, sidecar string, tracker *progressTracker, flusher *metadataFlusher) error {
 	var last error
 	badURLs := make(map[string]bool)
 	tries := max(1, d.opts.MaxRetries+1)
@@ -539,7 +535,7 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 				if writtenThisRequest <= 0 {
 					return nil
 				}
-				changed, markErr := meta.markRangeCompleteFromFile(f, markStart, reqStart+writtenThisRequest-1, sidecar)
+				changed, markErr := meta.markRangeCompleteFromFile(f.File, markStart, reqStart+writtenThisRequest-1, sidecar)
 				if markErr != nil {
 					return markErr
 				}
@@ -588,7 +584,7 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 	return io.ErrUnexpectedEOF
 }
 
-func (d *Downloader) downloadPiece(ctx context.Context, raw string, headers http.Header, f *os.File, start, end, total int64, tracker *progressTracker, onWrite func(int64) error) (int64, error) {
+func (d *Downloader) downloadPiece(ctx context.Context, raw string, headers http.Header, f io.WriterAt, start, end, total int64, tracker *progressTracker, onWrite func(int64) error) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
 		return 0, err
@@ -730,14 +726,29 @@ func (d *Downloader) putBuffer(buf []byte) {
 	d.bufPool.Put(buf[:d.opts.BufferSize])
 }
 
-func copyRangeToFile(f *os.File, r io.Reader, off int64, expected int64, buf []byte, tracker *progressTracker, onWrite func(int64) error) (int64, error) {
+// rangeFile serializes file writes to reduce contention between range workers.
+// Network reads remain parallel; progress callbacks run outside the write lock.
+type rangeFile struct {
+	*os.File
+	writeMu sync.Mutex
+}
+
+func (f *rangeFile) WriteAt(p []byte, off int64) (int, error) {
+	f.writeMu.Lock()
+	n, err := f.File.WriteAt(p, off)
+	f.writeMu.Unlock()
+	return n, err
+}
+
+func copyRangeToFile(f io.WriterAt, r io.Reader, off int64, expected int64, buf []byte, tracker *progressTracker, onWrite func(int64) error) (int64, error) {
 	var written int64
-	for {
-		n, er := r.Read(buf)
+	for written < expected {
+		readBuf := buf
+		if remaining := expected - written; int64(len(readBuf)) > remaining {
+			readBuf = readBuf[:int(remaining)]
+		}
+		n, er := r.Read(readBuf)
 		if n > 0 {
-			if written+int64(n) > expected {
-				n = int(expected - written)
-			}
 			wn, ew := f.WriteAt(buf[:n], off+written)
 			if wn > 0 {
 				written += int64(wn)
@@ -771,6 +782,7 @@ func copyRangeToFile(f *os.File, r io.Reader, off int64, expected int64, buf []b
 			return written, er
 		}
 	}
+	return written, nil
 }
 
 func copyWithProgress(w io.Writer, r io.Reader, buf []byte, tracker *progressTracker) (int64, error) {
@@ -893,8 +905,15 @@ func (d *Downloader) emitRetry(id, raw string, pieceIndex int, attempt int, err 
 }
 
 func (d *Downloader) failEvent(id, url, path string, started time.Time, err error) {
-	prog := Progress{ID: id, State: StateFailed, Path: path, StartedAt: started, UpdatedAt: time.Now(), Error: err.Error()}
-	d.emitEvent(Event{Kind: EventFailed, ID: id, URL: url, Path: path, Error: err.Error(), Time: time.Now(), Progress: prog})
+	state, kind := StateFailed, EventFailed
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		state, kind = StateCancelled, EventCancelled
+	}
+	prog := Progress{ID: id, State: state, Path: path, StartedAt: started, UpdatedAt: time.Now(), Error: err.Error()}
+	if state == StateCancelled && d.opts.OnProgress != nil {
+		d.opts.OnProgress(prog)
+	}
+	d.emitEvent(Event{Kind: kind, ID: id, URL: url, Path: path, Error: err.Error(), Time: prog.UpdatedAt, Progress: prog})
 }
 
 func cloneHeader(h http.Header) http.Header {

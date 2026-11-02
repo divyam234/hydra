@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -123,5 +125,106 @@ func TestCLIJSONSuccessChecksumAndCustomHeader(t *testing.T) {
 	}
 	if !complete || !verifying {
 		t.Fatalf("missing verified completion: %s", stderr)
+	}
+}
+
+func TestCLICtrlCReportsCancellationOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Interrupt cannot be sent to a Windows process")
+	}
+	for _, scenario := range []struct {
+		name  string
+		split string
+		extra []string
+	}{
+		{"single", "1", nil},
+		{"segmented", "4", nil},
+		{"json", "4", []string{"--json-events"}},
+		{"quiet", "4", []string{"--quiet"}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			ready := make(chan struct{})
+			var once sync.Once
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				const size = 4 << 20
+				start, end := int64(0), int64(size-1)
+				if value := r.Header.Get("Range"); value != "" {
+					if _, err := fmt.Sscanf(value, "bytes=%d-%d", &start, &end); err != nil {
+						t.Errorf("invalid test range: %q", value)
+						return
+					}
+				}
+				w.Header().Set("ETag", `"ctrl-c-object"`)
+				w.Header().Set("Accept-Ranges", "bytes")
+				w.Header().Set("Content-Length", fmt.Sprint(end-start+1))
+				if r.Method == http.MethodHead {
+					return
+				}
+				if r.Header.Get("Range") != "" {
+					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+					w.WriteHeader(http.StatusPartialContent)
+				}
+				_, _ = w.Write(bytes.Repeat([]byte("x"), 32<<10))
+				w.(http.Flusher).Flush()
+				once.Do(func() { close(ready) })
+				<-r.Context().Done()
+			}))
+			defer srv.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			args := []string{"-test.run=^TestCLIHelperProcess$", "--", "--no-env-proxy", "-s", scenario.split, "-x", scenario.split, "-k", "32K", "-d", t.TempDir()}
+			args = append(args, scenario.extra...)
+			cmd := exec.CommandContext(ctx, os.Args[0], append(args, srv.URL)...)
+			cmd.Env = append(os.Environ(), "HYDRA_CLI_TEST_HELPER=1", "GORACE=atexit_sleep_ms=0")
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer cmd.Process.Kill()
+			select {
+			case <-ready:
+			case <-ctx.Done():
+				_ = cmd.Wait()
+				t.Fatal("CLI never started downloading")
+			}
+			if err := cmd.Process.Signal(os.Interrupt); err != nil {
+				t.Fatal(err)
+			}
+			err := cmd.Wait()
+			if ctx.Err() != nil || err == nil {
+				t.Fatalf("cancellation exit=%v timeout=%v stderr=%s", err, ctx.Err(), stderr.String())
+			}
+			output := stderr.String()
+			if scenario.name == "quiet" {
+				if strings.TrimSpace(output) != "" {
+					t.Fatalf("quiet cancellation printed redundant output: %s", output)
+				}
+				return
+			}
+			terminal := 0
+			for _, line := range strings.Split(strings.ReplaceAll(output, "\r", "\n"), "\n") {
+				if scenario.name == "json" {
+					if strings.TrimSpace(line) == "" {
+						continue
+					}
+					var event struct{ Kind string }
+					if err := json.Unmarshal([]byte(line), &event); err != nil {
+						t.Fatalf("non-JSON cancellation output: %q", line)
+					}
+					if event.Kind == "failed" {
+						t.Fatalf("Ctrl+C reported as failure: %s", line)
+					}
+					if event.Kind == "cancelled" {
+						terminal++
+					}
+				} else if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "cancelled" {
+					terminal++
+				}
+			}
+			if terminal != 1 || strings.Contains(output, "error: context canceled") {
+				t.Fatalf("expected one cancellation report without duplicate error: %s", output)
+			}
+		})
 	}
 }
