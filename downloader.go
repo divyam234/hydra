@@ -349,7 +349,7 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 			defer wg.Done()
 			for p := range jobs {
 				tracker.incActive()
-				err := d.downloadPieceWithRetry(ctx, req.ID, req.URLs, headers, output, p, meta, sidecar, tracker, flusher)
+				err := d.downloadPieceWithRetry(ctx, req.ID, req.URLs, headers, output, p, meta, tracker, flusher)
 				tracker.decActive()
 				if err != nil {
 					select {
@@ -504,7 +504,7 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 	return Result{ID: req.ID, Path: finalPath, URL: info.URL, Size: size, Resumed: resumed, ResumedBytes: offset, Connections: 1, StartedAt: started}, nil
 }
 
-func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls []string, headers http.Header, f *rangeFile, p piece, meta *metaFile, sidecar string, tracker *progressTracker, flusher *metadataFlusher) error {
+func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls []string, headers http.Header, f *rangeFile, p piece, meta *metaFile, tracker *progressTracker, flusher *metadataFlusher) error {
 	var last error
 	badURLs := make(map[string]bool)
 	tries := max(1, d.opts.MaxRetries+1)
@@ -512,6 +512,7 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 	if p.size() <= 0 {
 		return nil
 	}
+	output := newCheckpointWriter(f, meta, p.Start)
 
 	for attempt := 0; attempt < tries && done < p.size(); attempt++ {
 		canRetry := false
@@ -523,27 +524,12 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 				return ctx.Err()
 			}
 			reqStart := p.Start + done
-			markStart := reqStart
-			if meta.BlockSize > 0 {
-				markStart = (reqStart / meta.BlockSize) * meta.BlockSize
-				if markStart < p.Start {
-					markStart = p.Start
-				}
-			}
 			started := time.Now()
-			n, err := d.downloadPiece(ctx, raw, headers, f, reqStart, p.End, meta.Size, tracker, func(writtenThisRequest int64) error {
-				if writtenThisRequest <= 0 {
-					return nil
-				}
-				changed, markErr := meta.markRangeCompleteFromFile(f.File, markStart, reqStart+writtenThisRequest-1, sidecar)
-				if markErr != nil {
-					return markErr
-				}
-				if changed > 0 {
-					tracker.addPiecesDone(int64(changed))
+			n, err := d.downloadPiece(ctx, raw, headers, output, reqStart, p.End, meta.Size, tracker, func(_ int64) error {
+				if output.completed > 0 {
+					tracker.addPiecesDone(int64(output.completed))
+					output.completed = 0
 					flusher.request()
-					// Already-completed blocks need not be rescanned on each buffer.
-					markStart = ((reqStart + writtenThisRequest) / meta.BlockSize) * meta.BlockSize
 				}
 				return nil
 			})
@@ -747,7 +733,17 @@ func copyRangeToFile(f io.WriterAt, r io.Reader, off int64, expected int64, buf 
 		if remaining := expected - written; int64(len(readBuf)) > remaining {
 			readBuf = readBuf[:int(remaining)]
 		}
-		n, er := r.Read(readBuf)
+		// Socket reads can be much shorter than the buffer. Coalesce them to
+		// reduce write syscalls and write-lock handoffs, but preserve an error
+		// returned alongside data even when it fills this buffer (ReadFull
+		// would discard that error).
+		var n int
+		var er error
+		for n < len(readBuf) && er == nil {
+			var count int
+			count, er = r.Read(readBuf[n:])
+			n += count
+		}
 		if n > 0 {
 			wn, ew := f.WriteAt(buf[:n], off+written)
 			if wn > 0 {

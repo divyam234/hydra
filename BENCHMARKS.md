@@ -1,5 +1,89 @@
 # Correctness and performance audit
 
+## Streaming checkpoint hashes and batched writes (2026-11-06)
+
+Compared unmodified `b11d79340f22` with the current segmented download path:
+socket short reads are coalesced into the existing 256 KiB output buffer,
+and SHA-256 hashes are accumulated from bytes successfully written instead
+of rereading every completed block. Each range job retains its hash state
+across HTTP retries. Only fully written blocks receive hashes/completion bits;
+checkpoints still sync data before saving metadata. Resume still rereads and
+verifies saved bytes against the checkpoint hashes. Metadata v3 and publisher
+checksum handling are unchanged.
+
+Same ARM Neoverse-N1, Go 1.26.10, `CGO_ENABLED=1`, `GOMAXPROCS=12` and 512 MiB
+Go HTTP/1.1 loopback source as the intermediate comparison below. Three paired
+rounds alternated binary order, with two fresh downloads per measurement.
+Median CPU seconds/GiB and throughput (no profiler during timing):
+
+| Connections | Before CPU s/GiB | After CPU s/GiB | Before MiB/s | After MiB/s |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 1.080 | 1.082 | 476.5 | 499.0 |
+| 2 | 2.694 | 1.973 | 294.6 | 448.7 |
+| 8 | 2.658 | 2.144 | 390.0 | 558.9 |
+| 32 | 2.698 | 2.201 | 444.4 | 656.2 |
+
+The segmented CPU/GiB medians decreased about 27%, 19%, and 18%, respectively.
+Single-stream code is unchanged; no single-stream CPU improvement is claimed.
+A separate comparison with a 16 MiB/s per-connection server limit gave:
+
+| Connections | Before CPU s/GiB | After CPU s/GiB | Before MiB/s | After MiB/s |
+| --- | ---: | ---: | ---: | ---: |
+| 8 | 4.964 | 3.991 | 118.1 | 118.7 |
+| 32 | 3.394 | 3.257 | 347.3 | 375.1 |
+
+All 72 outputs across the two comparisons passed independent SHA-256 checks
+outside timing. CPU excludes the server and post-download checks, but includes
+output syncs. These cached-source local HTTP tests do not establish a CPU
+percentage for remote HTTPS downloads or terminal rendering. CPU/GiB measures
+work; higher throughput can still produce a higher instantaneous CPU percentage.
+
+A separate six-download CPU/mutex profile at 32 connections no longer showed
+the per-block file reread path. CPU samples were about 28% SHA-256, 32% socket
+reads, and 27% positioned output writes. Output-write serialization remains
+the dominant mutex wait; these changes are not claimed to be a maximum possible
+optimization. Tests cover partial writes/errors, hash continuity across retries,
+short final blocks, corruption on resume, completion during sync, and preservation
+of data-bearing read errors (including when they fill an intermediate buffer).
+
+## Intermediate lock-only comparison (2026-11-06)
+
+Compared unmodified `b11d79340f22` with hashing completed resume blocks outside
+the shared metadata lock and avoiding metadata calls for incomplete blocks.
+SHA-256, on-disk hash input, serialized output writes, metadata v3, and
+sync-before-checkpoint ordering are unchanged.
+
+ARM Neoverse-N1 / Linux ARM64, Go 1.26.10, `CGO_ENABLED=1`, `GOMAXPROCS=12`.
+A separate Go HTTP/1.1 loopback server served a 512 MiB deterministic payload
+with a strong ETag. Both clients used the Go API, default 256 KiB buffers and
+1 MiB resume blocks, `MinSplitSize=1`, no progress callback, and no requested
+final checksum. Three paired rounds alternated binary order; each measurement
+downloaded two fresh files. Medians of the three measurements:
+
+| Connections | Before CPU s/GiB | After CPU s/GiB | Before MiB/s | After MiB/s |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 1.037 | 1.076 | 521.2 | 517.3 |
+| 2 | 2.641 | 2.466 | 313.0 | 370.1 |
+| 8 | 2.803 | 2.739 | 377.2 | 480.1 |
+| 32 | 2.647 | 2.609 | 473.9 | 601.3 |
+
+CPU is process user + system time around the download call, including output
+syncing, excluding server CPU and independent post-download verification.
+All 48 outputs passed SHA-256 verification. These are cached-source local
+measurements, not internet, TLS, terminal-rendering, or physical-disk results.
+The high-concurrency improvement is primarily throughput (about 27%), not a
+large demonstrated CPU/GiB reduction. CPU utilization can increase when the
+same work finishes sooner. Single-stream code is unchanged; its CPU median
+increased about 4%, so no single-stream improvement is established.
+
+Separate CPU/mutex profiles over six 512 MiB downloads at 32 connections
+reduced metadata completion's cumulative mutex delay from 73.6 seconds to
+below the report cutoff (0.34 seconds). Aggregate write-lock delay became the
+dominant wait (67.6 seconds); mutex delay sums goroutine waits and is not CPU
+time. Hashing still consumes roughly 25% of CPU samples. Deterministic tests
+cover concurrent block publication, checkpoints during an in-flight hash,
+duplicate completions, partial hash failure, and the shorter final block.
+
 ## CPU optimization comparison (2026-11-02)
 
 Linux 7.2.10 / ARM64, Go 1.26.10, **`CGO_ENABLED=0` for both binaries**.

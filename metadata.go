@@ -371,10 +371,32 @@ func (m *metaFile) markRangeComplete(start, end int64, sidecar string) (int, err
 	return m.markRangeCompleteFromFile(nil, start, end, sidecar)
 }
 
-func (m *metaFile) markRangeCompleteFromFile(f *os.File, start, end int64, sidecar string) (int, error) {
-	_ = sidecar // kept in the signature for older internal call sites; saving is batched by saveIfDue.
+func (m *metaFile) markBlockComplete(index int, digest [sha256.Size]byte) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if index < 0 || index >= m.BlockCount || testBit(m.bits, index) {
+		return false
+	}
+	m.ensureHashes()
+	copy(m.hashes[index*sha256.Size:], digest[:])
+	setBit(m.bits, index)
+	m.UpdatedAt = time.Now().UTC()
+	m.dirty = true
+	return true
+}
+
+func (m *metaFile) markRangeCompleteFromFile(f io.ReaderAt, start, end int64, sidecar string) (changed int, err error) {
+	_ = sidecar // kept in the signature for older internal call sites; saving is batched by saveIfDue.
+	m.mu.Lock()
+	defer func() {
+		// A later block may fail to hash after earlier blocks were published.
+		// Those successful completions still need to be checkpointed.
+		if changed > 0 {
+			m.UpdatedAt = time.Now().UTC()
+			m.dirty = true
+		}
+		m.mu.Unlock()
+	}()
 	if m.Version != metaVersionBitfield {
 		return 0, nil
 	}
@@ -390,15 +412,25 @@ func (m *metaFile) markRangeCompleteFromFile(f *os.File, start, end int64, sidec
 	}
 	first := int(start / m.BlockSize)
 	last := int(end / m.BlockSize)
-	changed := 0
 	for i := first; i <= last && i < m.BlockCount; i++ {
 		blockStart := int64(i) * m.BlockSize
-		blockEnd := blockStart + m.blockSize(i) - 1
+		blockSize := m.blockSize(i)
+		blockEnd := blockStart + blockSize - 1
 		if start <= blockStart && end >= blockEnd && !testBit(m.bits, i) {
 			if f != nil {
-				digest, err := hashFileBlock(f, blockStart, m.blockSize(i))
+				// Range workers own disjoint, block-aligned ranges. Once a block
+				// is fully written its bytes are stable, so its disk read and hash
+				// need not serialize unrelated workers or checkpoint snapshots.
+				m.mu.Unlock()
+				digest, err := hashFileBlock(f, blockStart, blockSize)
+				m.mu.Lock()
 				if err != nil {
 					return changed, err
+				}
+				// Another completion caller may have published this block while
+				// the lock was released. Count and publish it only once.
+				if testBit(m.bits, i) {
+					continue
 				}
 				m.ensureHashes()
 				copy(m.hashes[i*sha256.Size:], digest[:])
@@ -407,11 +439,6 @@ func (m *metaFile) markRangeCompleteFromFile(f *os.File, start, end int64, sidec
 			changed++
 		}
 	}
-	if changed == 0 {
-		return 0, nil
-	}
-	m.UpdatedAt = time.Now().UTC()
-	m.dirty = true
 	return changed, nil
 }
 
@@ -452,7 +479,7 @@ func (m *metaFile) markDone(index int, sidecar string) error {
 	if m.Version == metaVersionBitfield {
 		m.ensureBits()
 		// Internal helper used by fixtures and legacy callers. Production marks
-		// blocks via markRangeCompleteFromFile with its already-open output.
+		// blocks via checkpointWriter using the bytes accepted by the output.
 		if f, err := os.Open(m.Path); err == nil {
 			digest, hashErr := hashFileBlock(f, int64(index)*m.BlockSize, m.blockSize(index))
 			_ = f.Close()
@@ -659,7 +686,7 @@ var hashBufferPool = sync.Pool{
 	},
 }
 
-func hashFileBlock(f *os.File, start, size int64) ([sha256.Size]byte, error) {
+func hashFileBlock(f io.ReaderAt, start, size int64) ([sha256.Size]byte, error) {
 	buf := hashBufferPool.Get().(*[]byte)
 	defer hashBufferPool.Put(buf)
 	h := sha256.New()
