@@ -69,9 +69,9 @@ Set `SHA256` to the expected hexadecimal digest from the file's publisher.
 
 Press Ctrl+C to stop a download, then run the same command to resume. Keep the `.hydra` metadata and any `.part` files alongside the download.
 
-Resume uses a completion bitmap (sidecar format v4). Each completed range block is reused only when the server returns the same strong ETag and file size. Hydra does **not** compute SHA-256 or CRC32C for resume blocks and does **not** rehash previously saved bytes. A missing or changed strong ETag causes a restart, but silent local corruption cannot be detected by the bitmap alone. Supply a **publisher-provided full-file checksum** with `--checksum` to verify the result. Parallel downloads require a strong ETag or a supplied checksum; otherwise Hydra uses a single connection.
+Resume metadata v4 stores completed blocks in a bitmap, without per-block hashes. Hydra checks the server's ETag and file size before resuming but cannot detect corruption in saved blocks. Use `--checksum` with a publisher-supplied hash for full-file verification. Parallel downloads require a strong ETag or a supplied checksum.
 
-On the first resume after upgrading from an older v3 (or earlier) checkpoint, Hydra discards the old progress bits and downloads those bytes again. It does not silently reinterpret the old SHA-256 sidecar as an unchecked bitmap.
+Checkpoints from v3 or earlier are restarted instead of reused.
 
 ### Options
 
@@ -96,23 +96,23 @@ Run `hydra --help` for all options. If you built from source, use `./hydra` inst
 
 ## Benchmarks
 
-Latest ARM64 HTTP benchmark, **Hydra `4c61022` vs aria2c 1.37.0 vs SurgeDM `474a989`**. All results are means over five independent 256 MiB downloads per configuration, with CPU time and peak process RAM measured separately. All 105 downloads passed independent SHA-256 verification after timing.
+256 MiB HTTP downloads on ARM64, November 19, 2026. Hydra `4c61022`, aria2c 1.37.0, SurgeDM `474a989`. Five runs per setting; 16 requested connections. CPU is process user + system time; RAM is peak RSS.
 
-| Scenario (16 requested connections) | Downloader | Speed | CPU time | Peak RAM |
+| Scenario | Downloader | MiB/s | CPU (s) | RSS (MiB) |
 | --- | --- | ---: | ---: | ---: |
-| Uniform 8 MiB/s per GET | **Hydra** | **113.07 MiB/s** | **0.308 s** | **11.39 MiB** |
-| Uniform 8 MiB/s per GET | aria2c | 109.62 MiB/s | 0.468 s | 31.52 MiB |
-| Uniform 8 MiB/s per GET | Surge | 101.05 MiB/s | 1.110 s | 46.94 MiB |
-| Unthrottled loopback | **Hydra** | **609.28 MiB/s** | **0.256 s** | **11.71 MiB** |
-| Unthrottled loopback | aria2c | 296.32 MiB/s | 0.524 s | 30.04 MiB |
-| Unthrottled loopback | Surge | 349.63 MiB/s | 0.988 s | 46.77 MiB |
-| One slow range | Hydra | 84.52 MiB/s | **0.314 s** | **11.39 MiB** |
-| One slow range | **aria2c** | **93.52 MiB/s** | 0.474 s | 30.07 MiB |
-| One slow range | Surge | 81.76 MiB/s | 0.888 s | 46.98 MiB |
+| 8 MiB/s per connection | Hydra | 113.07 | 0.308 | 11.39 |
+| 8 MiB/s per connection | aria2c | 109.62 | 0.468 | 31.52 |
+| 8 MiB/s per connection | Surge | 101.05 | 1.110 | 46.94 |
+| Unthrottled | Hydra | 609.28 | 0.256 | 11.71 |
+| Unthrottled | aria2c | 296.32 | 0.524 | 30.04 |
+| Unthrottled | Surge | 349.63 | 0.988 | 46.77 |
+| One slow connection | Hydra | 84.52 | 0.314 | 11.39 |
+| One slow connection | aria2c | 93.52 | 0.474 | 30.07 |
+| One slow connection | Surge | 81.76 | 0.888 | 46.98 |
 
-These are synthetic, locally served, page-cache-assisted HTTP results—not promises of real internet speeds. In the slow-range test, aria2c is faster, although Hydra uses less CPU and RAM.
+Local HTTP tests with filesystem caching, not WAN measurements. All 105 outputs passed SHA-256 verification after timing.
 
-[Full three-scenario report](BENCHMARKS.md) · [105-run raw dataset](docs/benchmark-three-way.csv) · [Reproducible three-way script](scripts/benchmark_three_way.py)
+[Methodology and all results](BENCHMARKS.md) · [Raw CSV](docs/benchmark-three-way.csv) · [Benchmark script](scripts/benchmark_three_way.py)
 
 ## Documentation
 

@@ -1,4 +1,4 @@
-"""Fast, dependency-free unit tests for the public three-way benchmark harness."""
+"""Tests for benchmark_three_way.py."""
 
 import argparse
 import hashlib

@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Reproducible Hydra vs aria2c vs Surge HTTP download benchmark.
+"""Hydra, aria2c and Surge benchmark over local HTTP.
 
-Runs three local HTTP scenarios: uniform per-GET throttling, unthrottled, and
-one deliberately slow range. Records downloader process CPU seconds, peak
-RSS, wall time, throughput, request counts, and independent SHA-256 checks.
-
-Python 3.9+, Go, aria2c, Surge and GNU Time are required on Linux. Only Python
-stdlib modules are used. See ../BENCHMARKS.md for exact methodology and caveats.
+Tests throttled, unthrottled and slow-range transfers. Records wall time,
+CPU seconds, peak RSS and SHA-256 verification. Requires Linux, Python 3.9+,
+Go, GNU Time, aria2c and Surge. See BENCHMARKS.md.
 """
 
 import argparse
@@ -39,7 +36,7 @@ TIME_FORMAT = "user_s=%U\nsystem_s=%S\nmax_rss_kib=%M\n"
 
 
 class BenchmarkError(RuntimeError):
-    """A benchmark prerequisite, process, or integrity check failed."""
+    """Benchmark execution failure."""
 
 
 def parse_connections(value):

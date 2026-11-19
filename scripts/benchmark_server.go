@@ -1,7 +1,5 @@
-// A deterministic HTTP/1.1 range origin for scripts/benchmark_three_way.py.
-// Reproduces the conditions used in the published 2026-11-19 benchmark.
-// Serves local files only, binds to loopback by default, and never generates
-// download data during timed trials.
+// HTTP range test server for benchmark_three_way.py.
+// Provides per-request rate limiting and an optional slow range.
 package main
 
 import (
