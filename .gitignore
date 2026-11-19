@@ -28,3 +28,6 @@ Thumbs.db
 # Binaries
 /hydra
 *.exe
+
+# Local benchmark output
+/benchmark-results/

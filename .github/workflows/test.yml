@@ -35,7 +35,7 @@ jobs:
         run: go test -race ./...
       - name: Vet
         run: go vet ./...
-      - name: Benchmark harness tests
+      - name: Three-way benchmark harness unit tests
         run: python -m unittest discover -s scripts -p 'test_*.py'
       - name: Real-process resume integrity audit
         if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'

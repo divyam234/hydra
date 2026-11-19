@@ -96,18 +96,23 @@ Run `hydra --help` for all options. If you built from source, use `./hydra` inst
 
 ## Benchmarks
 
-Hydra engine at `61358c5` vs aria2c 1.37.0 on Linux/ARM64, built with Go 1.26.9 (`CGO_ENABLED=0`). Median throughput over three runs downloading a 128 MiB file from a local HTTP server; higher is better.
+Latest ARM64 HTTP benchmark, **Hydra `4c61022` vs aria2c 1.37.0 vs SurgeDM `474a989`**. All results are means over five independent 256 MiB downloads per configuration, with CPU time and peak process RAM measured separately. All 105 downloads passed independent SHA-256 verification after timing.
 
-| Local source | Connections | Hydra | aria2c |
-| --- | ---: | ---: | ---: |
-| Unrestricted | 1 | 408.7 MiB/s | 233.0 MiB/s |
-| Unrestricted | 8 | 305.7 MiB/s | 239.7 MiB/s |
-| Limited to 8 MiB/s per connection | 1 | 8.0 MiB/s | 7.9 MiB/s |
-| Limited to 8 MiB/s per connection | 8 | 50.6 MiB/s | 59.2 MiB/s |
+| Scenario (16 requested connections) | Downloader | Speed | CPU time | Peak RAM |
+| --- | --- | ---: | ---: | ---: |
+| Uniform 8 MiB/s per GET | **Hydra** | **113.07 MiB/s** | **0.308 s** | **11.39 MiB** |
+| Uniform 8 MiB/s per GET | aria2c | 109.62 MiB/s | 0.468 s | 31.52 MiB |
+| Uniform 8 MiB/s per GET | Surge | 101.05 MiB/s | 1.110 s | 46.94 MiB |
+| Unthrottled loopback | **Hydra** | **609.28 MiB/s** | **0.256 s** | **11.71 MiB** |
+| Unthrottled loopback | aria2c | 296.32 MiB/s | 0.524 s | 30.04 MiB |
+| Unthrottled loopback | Surge | 349.63 MiB/s | 0.988 s | 46.77 MiB |
+| One slow range | Hydra | 84.52 MiB/s | **0.314 s** | **11.39 MiB** |
+| One slow range | **aria2c** | **93.52 MiB/s** | 0.474 s | 30.07 MiB |
+| One slow range | Surge | 81.76 MiB/s | 0.888 s | 46.98 MiB |
 
-Timing includes process startup and file sync; all 24 downloads passed SHA-256 verification after timing. These loopback results include server and filesystem overhead, not internet performance. Hydra was faster in the unrestricted tests; aria2c was faster with eight throttled connections.
+These are synthetic, locally served, page-cache-assisted HTTP results—not promises of real internet speeds. In the slow-range test, aria2c is faster, although Hydra uses less CPU and RAM.
 
-[Methodology and reproduction](BENCHMARKS.md#current-version-comparison) · [Raw results](docs/benchmark-local.json)
+[Full three-scenario report](BENCHMARKS.md) · [105-run raw dataset](docs/benchmark-three-way.csv) · [Reproducible three-way script](scripts/benchmark_three_way.py)
 
 ## Documentation
 

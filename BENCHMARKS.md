@@ -1,423 +1,95 @@
-# Correctness and performance audit
+# Hydra vs aria2c vs Surge — three-way benchmarks
 
-## Bitmap-only resume checkpoints (2026-11-19)
+**Measured:** November 19, 2026 · **Hydra:** [`4c61022`](https://github.com/divyam234/hydra/commit/4c6102262b6cf638feb52b4284e86b6a661f4ce6) (bitmap-only resume + adaptive work stealing).
 
-Hydra's segmented and single-stream HTTP resume now use **completion bits /
-byte offsets rather than per-block SHA-256 or CRC32C**. This is an explicit
-throughput/CPU-versus-integrity decision, matching the ordinary HTTP resume
-approach used by download managers such as aria2c. A full-file checksum supplied
-by the publisher is still supported independently with `--checksum`.
+These are the latest measured CPU, memory and download-throughput comparisons for **Hydra (Go)**, **aria2c** and **SurgeDM (Go)**. This report replaces older, incompatible results from Hydra versions that hashed every resume block.
 
-- Segmented resume persists one bitmap bit per fully written block. In-flight
-  writes, retries, adaptive work stealing, mirror validation, data fsync before
-  metadata publication, and strong ETag / size / Last-Modified checks remain.
-- Single-stream resume saves the `.part` byte offset after fsync and reuses it
-  only with matching source identity, without hashing the saved prefix.
-- **Metadata version 4** stores no block or prefix hashes. An older v3 or
-  earlier sidecar triggers a one-time restart instead of reinterpreting hashed
-  checkpoints as unchecked completion bits.
-- Completed local blocks are **not rehashed on resume**. Corrupted local bytes
-  or forged bitmap bits are not detected by this mechanism; use an independently
-  supplied publisher checksum for end-to-end verification. A strong ETag
-  identifies the server representation but is not a cryptographic file digest.
+[Raw results — 105 verified trials](docs/benchmark-three-way.csv) · [Three-way benchmark script](scripts/benchmark_three_way.py) · [Local Go HTTP test server](scripts/benchmark_server.go)
 
-**CPU A/B benchmark:** ARM64 Neoverse-N1, Go 1.27.3 / CGO off, GOMAXPROCS=2,
-256 MiB HTTP Range file, 256 KiB buffers, 16 or 8 configured connections,
-arithmetic means over four throttled or five unthrottled independent runs.
-Tools use the same `adda015` adaptive scheduler. Every output was
-independently SHA-256 verified *after* timing; checksums were not computed by
-Hydra's bitmap-only mode.
+## Test environment and reproducibility
 
-| Server | Conns | SHA-256 mode wall s | Bitmap wall s | SHA-256 mode CPU s | Bitmap CPU s | CPU decrease |
-|---|---:|---:|---:|---:|---:|---:|
-| Per-GET 8 MiB/s + 40 ms request latency | 8 | 4.204 | 4.204 | 0.573 | **0.320** | **44%** |
-| Per-GET 8 MiB/s + 40 ms request latency | 16 | 2.278 | 2.273 | 0.520 | **0.315** | **39%** |
-| Local unthrottled | 8 | 0.505 | **0.469** | 0.462 | **0.262** | **43%** |
-| Local unthrottled | 16 | 0.540 | **0.467** | 0.480 | **0.276** | **43%** |
+- **Host:** ARM64 NixOS (Neoverse-N1; `nproc=2` available CPUs), Go 1.27.3, `GOMAXPROCS=2`; Hydra compiled with `CGO_ENABLED=0`.
+- **Hydra:** `github.com/divyam234/hydra`, Git commit `4c6102262b6cf638feb52b4284e86b6a661f4ce6`.
+- **aria2c:** version 1.37.0, invoked with `--no-conf`.
+- **SurgeDM:** `github.com/SurgeDM/Surge`, Git commit `474a989e3569`.
+- **Source:** immutable 256 MiB zero-filled file served locally over HTTP/1.1 with byte-range support and a strong ETag. Independent SHA-256: `a6d72ac7690f53be6ae46ba88506bd97302a093f7108472bd9efc3cefda06484`.
+- **Connections:** requested limits 4, 8 and 16 for uniform-speed tests, 16 for the slow-connection test. The *observed* maximum concurrent HTTP GETs are recorded separately; in the slow-connection test aria2c briefly reached **17**, despite a requested limit of 16.
+- **Minimum chunk/split:** configured to 1 MiB for each client; the clients choose their own actual request partitioning.
+- **Trial design:** five independent runs per client and connection setting, deterministic randomized client order, fresh output directories. All numbers below are arithmetic means of the runs.
+- **Timing:** includes process startup, download, file writes and sync. `GNU time` measures **user + system CPU time** (total CPU seconds, not CPU utilization) and **per-process peak RSS** (MiB). Wall time and derived transfer speed are measured by the Python harness.
+- **Integrity:** all **105/105** full outputs passed a separate SHA-256 verification **after** timing. This validation does not count toward any downloader's CPU seconds or wall time. No full-file checksum was supplied to any downloader during its timed run.
+- **Limitations:** the HTTP source and clients run on the **same machine** with a warm filesystem page cache. These results are not proof of equivalent performance over real WAN HTTPS, slow disks or concurrent multi-file downloads. Server CPU and system-wide page-cache memory are excluded.
 
-RSS remained ~8.5–9.0 MiB at eight connections and ~11.4–11.7 MiB at
-sixteen connections. Download time on a bandwidth-capped source changed
-negligibly, while the unthrottled server showed ~7–14% faster completion.
-These are local loopback results, **not a prediction for HTTPS WAN transfers**.
+## Scenario 1 — Uniformly throttled HTTP
 
-The original per-block SHA-256, corruption-repair, and checkpoint audit
-results in older sections below describe historical versions, not the new
-bitmap-only behavior.
+Each HTTP GET is capped at **8 MiB/s**, with **40 ms** of simulated per-request latency. Five repeats per configuration (**45 trials**).
 
-Raw local experiment (outside this repository):
-`../download-bench-20261119/results/bitmap-resume/throttled/raw.csv`,
-`../download-bench-20261119/results/bitmap-resume/unthrottled/raw.csv`,
-and reproducible `../download-bench-20261119/benchmark_bitmap_resume.py`.
-
-## Adaptive work-stealing range scheduling (2026-11-19)
-
-A separate experimental branch (`perf/adaptive-range-scheduling`) replaces the
-fixed `4 * connections` HTTP Range work queue with *one initial range per
-connection*, plus on-demand stealing. When a worker becomes idle it splits the
-largest other worker's **unreserved tail** on a resume-block boundary. Each
-worker reserves its next socket-read buffer before another worker can shorten
-that range, avoiding overlapping file writes, SHA-256 checkpoint blocks, and
-misleading completion bits. The original checkpoint format, range validation,
-mirror retries, and data-before-metadata syncing are preserved.
-
-**Uniform throughput benchmark** — ARM64 NixOS, 2 logical CPUs available,
-Go 1.27.3 with `CGO_ENABLED=0` for both source builds, 256 MiB local HTTP
-range file, 40 ms request delay, 8 MiB/s per GET, five independent runs per
-client/connection setting, all outputs verified by SHA-256.
-
-| Connections | Client | Mean wall s | Mean CPU s | Peak RSS MiB | GETs/file |
+| Requested connections | Downloader | Throughput (MiB/s) | Wall (s) | CPU (s) | Peak RSS (MiB) |
 |---:|---|---:|---:|---:|---:|
-| 8 | Original (`ad5f561`) | 4.336 | 0.650 | 8.74 | 32 |
-| 8 | Adaptive | 4.198 | 0.644 | 8.72 | 8 |
-| 8 | aria2c 1.37.0 | 4.369 | 0.462 | 24.48 | 8 |
-| 16 | Original (`ad5f561`) | 2.323 | 0.622 | 11.74 | 64 |
-| 16 | Adaptive | 2.334 | 0.618 | 11.52 | 16 |
-| 16 | aria2c 1.37.0 | 2.339 | 0.456 | 30.45 | 16 |
+| 4 | **Hydra** | **31.42** | **8.147** | **0.336** | **7.44** |
+| 4 | aria2c | 30.84 | 8.300 | 0.498 | 20.84 |
+| 4 | Surge | 30.30 | 8.449 | 0.582 | 33.77 |
+| 8 | **Hydra** | **61.06** | **4.193** | **0.302** | **8.54** |
+| 8 | aria2c | 59.16 | 4.327 | 0.484 | 24.79 |
+| 8 | Surge | 56.47 | 4.536 | 0.772 | 42.27 |
+| 16 | **Hydra** | **113.07** | **2.265** | **0.308** | **11.39** |
+| 16 | aria2c | 109.62 | 2.336 | 0.468 | 31.52 |
+| 16 | Surge | 101.05 | 2.538 | 1.110 | 46.94 |
 
-**Unbalanced connection benchmark** — same server settings, except a request
-starting at byte `251658240` is limited to 2 MiB/s. Three runs at 16
-connections:
+At 16 connections Hydra consumed **34% less CPU** and **64% less RSS** than aria2c, with approximately **3% more throughput**.
 
-| Client | Mean wall s | Mean CPU s | GETs/file |
-|---|---:|---:|---:|
-| Original Hydra (4x pieces) | 3.650 | 0.617 | 64 |
-| Adaptive Hydra | 3.029 | 0.607 | 26 |
-| One fixed piece per connection (no steals) | 8.004 | 0.577 | 16 |
-| aria2c 1.37.0 | 2.748 | 0.503 | 27 |
+## Scenario 2 — Unthrottled local HTTP
 
-The new scheduler cut completion time ~17% vs the original on this
-controlled uneven connection, but **did not demonstrate a meaningful CPU
-reduction** (less than 2% in these small samples). Against the original,
-its uniform-server CPU differences are within run-to-run noise. Fixed-N has
-lower CPU in some runs but stalls badly with an uneven connection. In this
-test aria2c still used less CPU than either Hydra scheduler.
+No artificial bandwidth limit or request delay. Five repeats per configuration (**45 trials**).
 
-`go test ./...`, `go test -race ./...`, and `go vet ./...` were run.
-Additional tests stress concurrent range reservations, a slow HTTP source,
-cancel/resume after stealing, and resumed output byte correctness.
+| Requested connections | Downloader | Throughput (MiB/s) | Wall (s) | CPU (s) | Peak RSS (MiB) |
+|---:|---|---:|---:|---:|---:|
+| 4 | **Hydra** | **567.99** | **0.463** | **0.260** | **7.64** |
+| 4 | aria2c | 304.96 | 0.840 | 0.480 | 20.81 |
+| 4 | Surge | 386.76 | 0.687 | 0.692 | 37.09 |
+| 8 | **Hydra** | **572.39** | **0.458** | **0.262** | **8.81** |
+| 8 | aria2c | 294.15 | 0.873 | 0.522 | 24.44 |
+| 8 | Surge | 288.89 | 0.906 | 1.118 | 42.27 |
+| 16 | **Hydra** | **609.28** | **0.424** | **0.256** | **11.71** |
+| 16 | aria2c | 296.32 | 0.868 | 0.524 | 30.04 |
+| 16 | Surge | 349.63 | 0.786 | 0.988 | 46.77 |
 
-Reproduction source and raw measurements (local machine, not committed to
-this repo): `../download-bench-20261119/compare_adaptive.py`,
-`../download-bench-20261119/results/adaptive-ab/raw.csv`, and
-`../download-bench-20261119/results/adaptive-skew/raw.csv`. These are
-synthetic loopback results, not a universal WAN or TLS performance result.
+At 16 connections Hydra transferred about **2.06× as fast** as aria2c while consuming **51% less CPU** and **61% less RSS** on this local workload. Note that adaptive splitting can trigger extra requests and discarded server bytes: Hydra consumed a mean **8.9%** more bytes on the server side than the file size in this scenario, compared with **3.2%** for aria2c. Subsecond runs exhibit noticeable relative noise.
 
-## Streaming checkpoint hashes and batched writes (2026-11-06)
+## Scenario 3 — One slow HTTP range
 
-Compared unmodified `b11d79340f22` with the current segmented download path:
-socket short reads are coalesced into the existing 256 KiB output buffer,
-and SHA-256 hashes are accumulated from bytes successfully written instead
-of rereading every completed block. Each range job retains its hash state
-across HTTP retries. Only fully written blocks receive hashes/completion bits;
-checkpoints still sync data before saving metadata. Resume still rereads and
-verifies saved bytes against the checkpoint hashes. Metadata v3 and publisher
-checksum handling are unchanged.
+One GET beginning at byte **251658240** (240 MiB of a 256 MiB file) is capped at **2 MiB/s**; all other GETs remain capped at **8 MiB/s**, with 40 ms request latency. **16 requested connections**, five repeats (**15 trials**).
 
-Same ARM Neoverse-N1, Go 1.26.10, `CGO_ENABLED=1`, `GOMAXPROCS=12` and 512 MiB
-Go HTTP/1.1 loopback source as the intermediate comparison below. Three paired
-rounds alternated binary order, with two fresh downloads per measurement.
-Median CPU seconds/GiB and throughput (no profiler during timing):
+| Downloader | Throughput (MiB/s) | Wall (s) | CPU (s) | Peak RSS (MiB) | Mean GETs | Peak GETs |
+|---|---:|---:|---:|---:|---:|---:|
+| Hydra | 84.52 | 3.029 | **0.314** | **11.39** | 26 | 16 |
+| **aria2c** | **93.52** | **2.737** | 0.474 | 30.07 | 27 | 17 |
+| Surge | 81.76 | 3.135 | 0.888 | 46.98 | 24.8 | 16 |
 
-| Connections | Before CPU s/GiB | After CPU s/GiB | Before MiB/s | After MiB/s |
-| --- | ---: | ---: | ---: | ---: |
-| 1 | 1.080 | 1.082 | 476.5 | 499.0 |
-| 2 | 2.694 | 1.973 | 294.6 | 448.7 |
-| 8 | 2.658 | 2.144 | 390.0 | 558.9 |
-| 32 | 2.698 | 2.201 | 444.4 | 656.2 |
+**aria2c is approximately 11% faster than Hydra in this deliberately uneven test.** Hydra still uses 34% less CPU and 62% less RAM; improving slow-worker range redistribution is a reasonable next optimization.
 
-The segmented CPU/GiB medians decreased about 27%, 19%, and 18%, respectively.
-Single-stream code is unchanged; no single-stream CPU improvement is claimed.
-A separate comparison with a 16 MiB/s per-connection server limit gave:
+## Running all three benchmarks
 
-| Connections | Before CPU s/GiB | After CPU s/GiB | Before MiB/s | After MiB/s |
-| --- | ---: | ---: | ---: | ---: |
-| 8 | 4.964 | 3.991 | 118.1 | 118.7 |
-| 32 | 3.394 | 3.257 | 347.3 | 375.1 |
+**Requirements:** Linux, Python 3.9+, Go, [aria2c](https://aria2.github.io/), [SurgeDM](https://github.com/SurgeDM/Surge) CLI, and **GNU Time**. Python uses only its standard library. Run from the Hydra repository root. The runner builds Hydra from the checked-out source with `CGO_ENABLED=0` and builds the bundled Go HTTP test server automatically; no pre-existing server or payload is required.
 
-All 72 outputs across the two comparisons passed independent SHA-256 checks
-outside timing. CPU excludes the server and post-download checks, but includes
-output syncs. These cached-source local HTTP tests do not establish a CPU
-percentage for remote HTTPS downloads or terminal rendering. CPU/GiB measures
-work; higher throughput can still produce a higher instantaneous CPU percentage.
-
-A separate six-download CPU/mutex profile at 32 connections no longer showed
-the per-block file reread path. CPU samples were about 28% SHA-256, 32% socket
-reads, and 27% positioned output writes. Output-write serialization remains
-the dominant mutex wait; these changes are not claimed to be a maximum possible
-optimization. Tests cover partial writes/errors, hash continuity across retries,
-short final blocks, corruption on resume, completion during sync, and preservation
-of data-bearing read errors (including when they fill an intermediate buffer).
-
-## Intermediate lock-only comparison (2026-11-06)
-
-Compared unmodified `b11d79340f22` with hashing completed resume blocks outside
-the shared metadata lock and avoiding metadata calls for incomplete blocks.
-SHA-256, on-disk hash input, serialized output writes, metadata v3, and
-sync-before-checkpoint ordering are unchanged.
-
-ARM Neoverse-N1 / Linux ARM64, Go 1.26.10, `CGO_ENABLED=1`, `GOMAXPROCS=12`.
-A separate Go HTTP/1.1 loopback server served a 512 MiB deterministic payload
-with a strong ETag. Both clients used the Go API, default 256 KiB buffers and
-1 MiB resume blocks, `MinSplitSize=1`, no progress callback, and no requested
-final checksum. Three paired rounds alternated binary order; each measurement
-downloaded two fresh files. Medians of the three measurements:
-
-| Connections | Before CPU s/GiB | After CPU s/GiB | Before MiB/s | After MiB/s |
-| --- | ---: | ---: | ---: | ---: |
-| 1 | 1.037 | 1.076 | 521.2 | 517.3 |
-| 2 | 2.641 | 2.466 | 313.0 | 370.1 |
-| 8 | 2.803 | 2.739 | 377.2 | 480.1 |
-| 32 | 2.647 | 2.609 | 473.9 | 601.3 |
-
-CPU is process user + system time around the download call, including output
-syncing, excluding server CPU and independent post-download verification.
-All 48 outputs passed SHA-256 verification. These are cached-source local
-measurements, not internet, TLS, terminal-rendering, or physical-disk results.
-The high-concurrency improvement is primarily throughput (about 27%), not a
-large demonstrated CPU/GiB reduction. CPU utilization can increase when the
-same work finishes sooner. Single-stream code is unchanged; its CPU median
-increased about 4%, so no single-stream improvement is established.
-
-Separate CPU/mutex profiles over six 512 MiB downloads at 32 connections
-reduced metadata completion's cumulative mutex delay from 73.6 seconds to
-below the report cutoff (0.34 seconds). Aggregate write-lock delay became the
-dominant wait (67.6 seconds); mutex delay sums goroutine waits and is not CPU
-time. Hashing still consumes roughly 25% of CPU samples. Deterministic tests
-cover concurrent block publication, checkpoints during an in-flight hash,
-duplicate completions, partial hash failure, and the shorter final block.
-
-## CPU optimization comparison (2026-11-02)
-
-Linux 7.2.10 / ARM64, Go 1.26.10, **`CGO_ENABLED=0` for both binaries**.
-Baseline: an archive of unmodified `2c14f819a573`; optimized: the working tree
-with per-output serialized range writes and pooled 256 KiB resume-hash read
-buffers. Both builds used `-buildvcs=false`. Network reads remain parallel.
-Resume hashes still cover bytes reread from the output file; checkpoint
-syncing, retries, and progress accounting remain enabled. These measurements
-replace the earlier `CGO_ENABLED=1` comparison.
-
-Unrestricted HTTP/1.1 loopback, 1 GiB position-dependent deterministic payload,
-quiet CLI, default 1 MiB resume blocks. Medians of three downloads per binary
-and connection count, with before/after ordering alternated:
-
-| Connections | Before CPU s/GiB | After CPU s/GiB | Before MiB/s | After MiB/s |
-| --- | ---: | ---: | ---: | ---: |
-| 1 | 0.804 | 0.851 | 658.9 | 664.8 |
-| 5 | 3.642 | 2.519 | 423.1 | 418.1 |
-| 8 | 3.820 | 2.498 | 435.2 | 426.8 |
-
-CPU is child-process user + system time divided by downloaded GiB, not a
-whole-machine utilization percentage. Timing includes process startup and
-output syncing; independent SHA-256 verification is outside timing. All 18
-downloads passed verification. Source-file reads are cached; these are not
-physical disk or internet bandwidth measurements.
-
-The five- and eight-connection medians used 31% and 35% less CPU per GiB,
-respectively, with about 1% and 2% lower throughput. Single-stream transfer
-code is unchanged; its measured CPU median increased about 6%, so no
-single-stream CPU improvement is established. Multiple connections still cost
-more than one: segmented transfers retain their per-block integrity hashing
-and rereads. Three-sample local results do not predict the CPU percentage or
-throughput of a particular remote HTTPS download, and are not a controlled
-comparison of CGO enabled versus disabled.
-
-The earlier five-connection CPU profile, collected with `CGO_ENABLED=1`,
-attributed about 58% of CPU to
-`WriteAt`/`pwrite`, 16% to socket reads, 15% to hardware-accelerated SHA-256,
-and 5% to hash-input file rereads. Serializing writes moves write contention
-out of the kernel while retaining parallel HTTP connections. Reusing larger
-hash-read buffers reduces read calls and temporary allocations without
-removing the on-disk integrity check. A short-read coalescing experiment was
-rejected because it did not consistently reduce CPU.
-
-Bandwidth-limited smoke comparison: 128 MiB payload, 8 MiB/s per connection,
-progress enabled with stderr written to a log, two runs per binary and
-configured connection count. Medians:
-
-| Configured connections | Before CPU s/GiB | After CPU s/GiB | Before MiB/s | After MiB/s |
-| --- | ---: | ---: | ---: | ---: |
-| 1 | 1.817 | 1.871 | 7.95 | 7.96 |
-| 5 | 2.926 | 2.748 | 25.54 | 25.53 |
-| 8 | 2.853 | 2.817 | 50.37 | 50.30 |
-
-All 12 bandwidth-limited outputs passed SHA-256 verification. Configured
-connections are a ceiling, not a guarantee of full utilization: the default
-20 MiB minimum split size and the tail of a small transfer limit parallelism.
-These short runs establish no obvious throughput regression in the tested
-bandwidth-limited workload, not a statistically established CPU improvement.
-Progress callbacks ran, but interactive terminal rendering was not measured.
-
-Earlier source verification passed `go test -race ./...` (which required
-`CGO_ENABLED=1`) and `go vet ./...`, including interrupted/resumed downloads
-and partial-read/error boundary regressions. Neither check was part of the
-CGO-disabled timed workload; no race-enabled binary was benchmarked.
-[Raw measurements, payload generation, commands, and executable build identities](docs/benchmark-cpu.json)
-record both workload comparisons. The Go API, CLI flags, resume metadata
-format, and single-stream copy behavior are unchanged.
-
-## Previous throughput comparison (2026-10-20)
-
-Measured on 2026-10-20 using the Hydra engine at `61358c5`, Go 1.26.9 with `CGO_ENABLED=0`, and aria2c 1.37.0 on Linux 7.2.10 / ARM64. The only working-tree change at build time was the benchmark server's strong ETag header; downloader source was unchanged. The ETag identifies the deterministic payload and allows current Hydra to use segmented downloads rather than fall back to a single stream.
-
-128 MiB deterministic payload served over HTTP/1.1 loopback. Medians of three runs, in MiB/s:
-
-| Source | Configured connections | Hydra | aria2c |
-| --- | ---: | ---: | ---: |
-| Unrestricted | 1 | 408.7 | 233.0 |
-| Unrestricted | 8 | 305.7 | 239.7 |
-| 8 MiB/s per connection | 1 | 8.0 | 7.9 |
-| 8 MiB/s per connection | 8 | 50.6 | 59.2 |
-
-All 24 timed downloads passed SHA-256 verification. Timing includes startup and output file sync; checksum verification is outside the timed interval. Tool ordering rotates between repetitions. The filesystem baseline was 786.9 MiB/s for buffered writes plus fsync and 6,768.3 MiB/s for cached reads, not physical disk bandwidth.
-
-Hydra won the unrestricted medians, while aria2c won the eight-connection throttled median. Hydra's throttled eight-connection samples ranged from 50.5 to 60.3 MiB/s; its unrestricted eight-connection result was slower than its single-connection result. More connections are not always faster. These three-sample local tests do not establish internet throughput or a universal performance advantage.
-
-[Raw timings, commands, executable hashes, and build information](docs/benchmark-local.json) are checked into the repository. The binary reports a dirty working tree because of the benchmark-server change described above.
-
-Reproduce with Python 3.9+, Go, and aria2c installed:
-
-```sh
-CGO_ENABLED=0 go build -o /tmp/opencode/hydra-readme-bench ./cmd/hydra
-python3 scripts/benchmark.py --hydra /tmp/opencode/hydra-readme-bench --directory /tmp/opencode --size-mib 128 --repeats 3 --output /tmp/opencode/hydra-readme-benchmark.json
+```bash
+# Surge must be installed and available as a CLI binary.
+# Set the path explicitly if it is not on PATH:
+python3 scripts/benchmark_three_way.py --surge /path/to/surge
 ```
 
-Create `/tmp/opencode` first if needed, or substitute an existing directory on the filesystem you want to measure. The audit sections below retain earlier results and their limitations; they are not measurements of this revision.
+Defaults reproduce **256 MiB**, **five repetitions**, and **4/8/16 connections** in the two uniform scenarios, plus **16 connections** with one slow range. Output appears under `benchmark-results/` as a combined `raw.csv`, `summary.json`, `metadata.json` (including binary SHA-256 hashes), and per-run GNU Time records. All temporary downloaded files and the HTTP test server are removed on completion.
 
-## Scope and evidence
+For a quick smoke test before a complete run:
 
-This audit covers the existing HTTP/HTTPS engine, CLI, resume metadata, queue manager, proxies, progress reporting, and local filesystem/HTTP performance. It does not certify that all bugs are gone or that Hydra is the fastest downloader on every workload.
-
-New regression coverage includes:
-
-- Missing/truncated segmented outputs with apparently complete sidecars: restart instead of publishing holes.
-- Unknown-length responses with `ExpectedSize`: validate the downloaded length before publishing.
-- Known-empty remote files versus nonempty existing outputs.
-- Repeatable queue `Wait`, simultaneous `Close` calls, enqueue/shutdown races, and canceled managers.
-- File-data sync before publishing completed metadata bits, including simulated sync failure.
-- Dirty metadata flushing even if workers stop producing new checkpoints.
-- Single-connection resume without an advertised `Accept-Ranges` header.
-- Malformed range probes, unsafe server filenames, invalid request policies, and CLI size overflow.
-- Linux preallocation shrinking an existing oversized output.
-- Removing stale segmented metadata after a successful single-stream download.
-- Failing over to healthy mirrors after permanent HTTP errors from another mirror, in single and segmented modes.
-- HTTPS/HTTP2 segmented transfers through a trusted test transport.
-- Environment proxy wiring and seeded/fuzzed `Content-Range` parsing.
-- Near-int64-limit block/range arithmetic and resource limits on untrusted sizes and sidecars.
-- Final result/completion progress speeds exclude pre-existing resumed bytes, with explicit `ResumedBytes` and `Downloaded` result counters.
-- Fresh single-stream downloads interrupted by non-range servers restart safely when a retry's Range request is ignored.
-- CLI subprocess tests reproduce and guard `--retry 0`, JSON-only failure events, and checksum rejection before network activity. Retry jitter stays below its configured cap and extreme delay/header values do not overflow.
-- Windows directory checkpoint syncing no longer calls `FlushFileBuffers` on Go's read-only directory handle. Regular output and sidecar file syncs remain enabled; directory durability is best effort on Windows.
-- Concurrent generated job IDs are unique: a 32-worker test reproduced timestamp collisions in all five pre-fix runs; an atomic sequence now disambiguates the readable timestamp.
-- Manager lifecycle ordering is deterministic: `queued` precedes `started`/`probing`; three pre-fix runs reproduced the reversed order.
-- A falsely advertised range-capable origin falls back to a single stream instead of failing with HTTP 200. Invalid `Content-Range` and local file-write errors fail fast rather than wasting retry backoff; valid alternate mirrors can still be used.
-- Known-path `skip`/`error` policies resolve existing files locally without requiring a reachable origin. Explicit skip accepts the existing file even if a probed remote size differs, but still enforces requested checksums/sizes and file locks.
-- Overwrite and sidecar cleanup refuse directories; directory-shaped `.hydra`/`.part` entries are not treated as valid resume files.
-- One-shot downloads and closed managers release internally owned idle transport connections. Server connection-state tests reproduced retained connections before the fix. Caller-supplied transports remain caller-owned; reusable Downloaders expose explicit idle-connection cleanup.
-- Fresh files too small to split no longer incur a redundant one-byte range probe; a request-count test reproduced three requests where only HEAD + GET were needed. HEAD 501 responses now use the existing GET fallback instead of rejecting a downloadable object.
-
-Existing coverage also exercises checksum verification, HTTP/SOCKS proxies, cancellation/resume, mirror scoring, retries, existing-file policies, and progress accounting. Single-stream downloads attempt an actual resume when a partial file exists, without adding an extra range probe to fresh downloads.
-
-## Performance changes
-
-- Serialize the base64 metadata bitfield when saving, not on every copy buffer/read of metadata counters.
-- Advance checkpoint scan boundaries during range transfers instead of rescanning the whole cumulative range on each buffer.
-- Avoid progress sampling on the quiet copy path and avoid mutating rolling-speed samples when an update is throttled.
-- Preserve existing block-completion progress callbacks.
-- Completed segmented transfers sync the output and directory without serializing/fsyncing a completed checkpoint immediately before deleting it. Cancellation/failure and `KeepPartFile` still persist the checkpoint after data sync.
-- Remove range-job metadata-count replacement that could race with other workers' block-counter increments; block completion is counted only once per new bit.
-
-Periodic checkpoints now sync file data before sidecars. This is a correctness cost, not an optimization to remove for benchmark scores.
-
-A targeted `strace` comparison of `TestSegmentedDownload` confirmed **5 → 4 fsync calls** after removing the redundant successful-completion checkpoint rewrite. Output-file sync and final directory sync remain; the cancellation and kept-checkpoint regression tests also pass. This syscall count establishes reduced work, not a promise of a specific throughput gain on every disk.
-
-## Verification results
-
-- Original repository: `go test ./...` passed before changes. Newly added tests then reproduced missing/truncated-output corruption, unchecked unknown response lengths, and non-repeatable manager results.
-- Latest source: `go test -race -coverprofile=... ./...`, `go vet ./...`, and `git diff --check` passed.
-- Statement coverage after extended hardening: core package **79.8%**, CLI tests **80.9%**. CLI benchmark invocations exercise the compiled CLI separately and are not included in this coverage figure.
-- `Content-Range` fuzzing completed 231,542 executions in a recorded 10-second run with no failing input (an earlier run completed 246,101).
-- Missing-range scheduling fuzzing completed **411,222 executions** in 10 seconds with no failing input. It checks exact coverage of missing blocks, exclusion of completed blocks, valid bounds, and block alignment.
-- Extreme-size arithmetic and metadata-allocation rejection tests pass without attempting physically enormous downloads.
-- A Linux sparse-file test writes and reads back a range **above the 4 GiB boundary**, validating real 64-bit file offsets without transferring or allocating a full multi-gigabyte payload.
-- `.github/workflows/test.yml` runs race tests, vet, and benchmark-harness unit tests on Linux (Go 1.25.x and stable), plus stable Go on Windows and macOS. These native-platform CI jobs are configured but have not been run on GitHub by this local audit; network benchmarks are deliberately manual.
-- CGO-disabled CLI builds succeeded for all six release targets: Linux, Windows and macOS, each on AMD64 and ARM64. This is build verification, not native runtime verification on those other platforms.
-
-Passing tests and these coverage figures are evidence for the tested cases, not proof that every bug has been eliminated. Real power-loss testing, arbitrary hostile origins, and every operating system remain separate verification tasks.
-
-### Microbenchmarks
-
-Linux/ARM64, Go 1.26.8, three runs per revision; medians below. Baseline is commit `bc5dbd4`. These helper benchmarks do not measure end-to-end network or physical disk throughput.
-
-| Benchmark | Baseline | Audited | Allocations/op (before → after) |
-| --- | ---: | ---: | ---: |
-| Metadata checkpoint, 4 GiB bitfield | 12,676 ns/op | 9,664 ns/op | 2 → 0 |
-| Copy 8 MiB to discard, quiet progress | 870,761 ns/op | 836,342 ns/op | 7 → 2 |
-
-The checkpoint helper improved about 24%; quiet-copy improvement was about 4%, small enough to treat cautiously without a larger statistical study. Metadata allocations fell from roughly 1.46 KiB/op to zero; quiet-copy allocations fell from 2,192 to 80 bytes/op. The metadata benchmark intentionally reuses cumulative ranges, while actual transfers now also advance scan boundaries.
-
-## End-to-end results
-
-**Historical measurements:** these figures predate the subsequent resume-integrity fixes (v3 block hashes, authenticated single-stream prefixes, and safe single-stream fallback without a strong ETag/checksum). They do not establish throughput of the current source.
-
-Recorded on Linux 7.2.10 / ARM64, Go 1.26.8, aria2c 1.37.0, ext4 on `/dev/vda2`. Each entry is the median of three runs with the corrected blocking-wait harness. Baseline is `bc5dbd4`; Hydra is the audited working tree including the completion-checkpoint optimization. Both Go executables use **CGO_ENABLED=0**, matching release builds; executable identities/build settings are recorded in JSON. All **54 timed downloads passed SHA-256 verification**.
-
-### Local HTTP and filesystem
-
-128 MiB deterministic, non-repeating payload; HTTP/1.1 loopback source. Units: MiB/s.
-
-| Source / configured connections | Baseline Hydra | Audited Hydra | aria2c |
-| --- | ---: | ---: | ---: |
-| Unrestricted, 1 | 536.0 | 567.5 | 252.5 |
-| Unrestricted, 8 | 495.8 | 587.0 | 296.5 |
-| 8 MiB/s per connection, 1 | 8.0 | 8.0 | 7.9 |
-| 8 MiB/s per connection, 8 | 61.1 | 61.0 | 59.9 |
-
-Filesystem baseline: **821.1 MiB/s buffered write + fsync**, **6,931.5 MiB/s cached read**, medians over three 128 MiB runs. The cached read figure is not physical disk bandwidth.
-
-Audited Hydra's unrestricted local medians were faster than aria2c and the baseline in this final run. The eight-worker Hydra range was 586.6–588.2 MiB/s; baseline results ranged from 392.8–587.3 MiB/s. Other exploratory repetitions also showed sizable variability, so this is not a statistically established universal improvement. At a per-connection network ceiling, all tools approached the imposed limit.
-
-### Real-network HTTPS
-
-Source: `https://proof.ovh.net/files/10Mb.dat`, 10 MiB. Reference SHA-256: `e5b844cc57f57094ea4585e235f36c78c1cd222262bb89d53c94dcb4d6b3e55d`.
-
-| Configured connections/workers | Baseline Hydra | Audited Hydra | aria2c |
-| --- | ---: | ---: | ---: |
-| 1 | 51.2 | 50.2 | 53.9 |
-| 8 | 46.5 | 45.8 | 40.1 |
-
-Units: MiB/s, including startup, probing, TLS and file fsync. This small-file test measures end-to-end completion on one server/route, **not sustained link capacity**. HTTP versions and physical connection counts can differ: Go's transport may multiplex range requests over HTTP/2, whereas aria2c uses its own connection strategy. Audited eight-worker runs ranged from 44.8 to 50.9 MiB/s. **aria2c won the single-worker median**, while Hydra won the eight-worker median; the old Hydra's WAN medians were slightly higher than the audited version. Small differences and three-sample results must not be overinterpreted.
-
-Full per-run timings, commands, executable fingerprints/build settings and hash checks remain available in this audit environment at `/tmp/opencode/hydra-final-local.json` and `/tmp/opencode/hydra-final-wan.json`. Reproduce them using the commands below; temporary files are not permanent repository artifacts.
-
-**Conclusion:** correctness and helper overhead improved; Hydra beat aria2c in the local medians and the eight-worker public-server median, but not the single-worker WAN median. It is not uniformly faster than the old Hydra or aria2c, and this does not establish the world's fastest downloader.
-
-## Reproduction
-
-```sh
-go test -race ./...
-go vet ./...
-go test -run '^$' -fuzz '^FuzzParseContentRange$' -fuzztime=10s
-go test -run '^$' -fuzz '^FuzzPendingPieces$' -fuzztime=10s
-go test -run '^$' -bench 'BenchmarkMetadataCheckpoint|BenchmarkCopyWithProgress' -benchmem -count=3
-python3 -m unittest discover -s scripts -p 'test_*.py'
-CGO_ENABLED=0 go build -o /tmp/opencode/hydra ./cmd/hydra
-python3 scripts/benchmark.py --hydra /tmp/opencode/hydra --directory /tmp/opencode --size-mib 128 --repeats 3 --output /tmp/opencode/hydra-benchmark.json
-python3 scripts/benchmark.py --hydra /tmp/opencode/hydra --url https://proof.ovh.net/files/10Mb.dat --size-mib 16 --repeats 3 --output /tmp/opencode/hydra-wan.json
+```bash
+python3 scripts/benchmark_three_way.py \
+  --surge /path/to/surge \
+  --size-mib 16 --repeats 1 --connections 4,8 --skew-connections 4
 ```
 
-The benchmark requires Python 3.9+ and aria2c, but adds no project dependencies. It creates and cleans up its own temporary download directory. Use `--baseline /path/to/older/hydra` to compare revisions. Output files are verified with SHA-256 after timing; timed runs include process startup and file fsync. Tool ordering rotates between repetitions. aria2c uses `--no-conf` to exclude personal configuration, its default disk cache, and `--file-allocation=none` to avoid slow eager allocation. Hydra retains its native preallocation/checkpoint behavior.
+Other useful options include `--hydra /path/to/hydra`, `--gnu-time /path/to/time`, `--scenarios throttled unthrottled skew`, `--output-dir /some/path`, and `--timeout-seconds 120`. Do not compare a smoke test using a 16 MiB file with the published 256 MiB results.
 
-Process completion is measured with a blocking wait and a separate timeout watchdog. Early exploratory runs used Python's timeout-enabled polling wait, which quantized fast transfers; those end-to-end figures are discarded, not used as final results.
+**Reproduction caveat:** the new bundled HTTP fixture preserves the earlier Go test server's range handling, artificial rate limits and delays. The published figures were measured using the original local benchmark server and binaries on the ARM64 host; new runs may differ due to compiler/runtime, kernel, scheduler and cache state. Always use newly generated results for claims about another machine.
 
-Use the same Go toolchain and build flags for the baseline and audited binaries. Release-style comparisons use `CGO_ENABLED=0` for both. JSON output records executable SHA-256 identities and, when Go is installed, `go version -m` build settings so mismatches can be inspected.
-
-## Limits
-
-- Loopback performance includes the Python HTTP server and OS page cache, not just downloader overhead. The throttled mode simulates a per-connection rate ceiling, not WAN latency, loss, or congestion.
-- Buffered write plus fsync measures the selected filesystem; cached reads are **not** physical disk read bandwidth. No global cache dropping or raw-device writes are performed.
-- Data-before-metadata ordering is regression-tested with a sync hook. Actual power-loss recovery requires filesystem/device-specific crash testing and is not established here.
-- Current version 4 resume validates matching strong ETag, file size, and Last-Modified identity, but **does not hash previously completed blocks**. Missing/changed identity forces a restart; damaged local blocks are not automatically repaired. An independently supplied publisher checksum can verify final content.
-- The resume bitfield is capped at 64 MiB and sidecar JSON at 128 MiB. Increase `ResumeBlockSize` for exceptionally large files. Older capacity calculations assuming SHA-256 per block no longer apply to metadata v4.
-- The default 60-second timeout is a whole-request deadline, including the body. Very large requests on slow links may require a larger `Timeout`/`--timeout`. The sparse-file and arithmetic tests do not establish sustained multi-gigabyte WAN transfer performance.
-- A real-network comparison can exercise one selected server/route, not establish performance across the internet. Its source must remain stable across range requests and repetitions; every output is checked against a reference SHA-256. The remote mode disables proxy environment settings for timed tools and bounds the reference fetch, not a server that changes unexpectedly afterward.
-- HTTP3, torrents, FTP, browser extensions, and cross-platform runtime behavior are outside these measurements. No new protocol or browser extension is implemented by this audit.
+The historical performance optimization experiments are deliberately not included here. This page, the single three-way runner, and the raw dataset are the maintained benchmark artifacts.

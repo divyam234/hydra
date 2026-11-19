@@ -2,8 +2,9 @@
 """Black-box CLI resume audit. No Hydra internals/imports or third-party packages.
 
 Kills real processes after observing completed checkpoints or growing single-
-stream partial files; compares final files with an independent source SHA-256.
-Exits 1 on corruption, unexpected rejection, or an unsafe version change.
+stream partial files; compares final files with independent SHA-256. Expected
+bitmap-only tradeoff: damaged completed bytes remain undetected unless a
+publisher checksum was supplied. Exits 1 on unexpected outcomes.
 """
 
 import argparse
@@ -187,8 +188,12 @@ def run_case(binary, server, root, name, splits, mode="stable", checksum=False):
         "silent_corruption" if result.returncode == 0 else "rejected")
     if mode == "stable" and status != "hash_match":
         raise RuntimeError(f"{name}: healthy resume failed: {result.stderr!r}")
+    expected_status = ("rejected" if mode == "change_after_probe" else
+                       "rejected" if mode == "local_damage" and checksum else
+                       "silent_corruption" if mode == "local_damage" else
+                       "hash_match")
     return {"case": name, "status": status, "exit_code": result.returncode,
-            "expected_status": "rejected" if mode == "change_after_probe" else "hash_match",
+            "expected_status": expected_status,
             "sha256": digest, "expected_sha256": expected, "interruptions": records,
             "stderr": result.stderr.decode(errors="replace"), "checksum_supplied": checksum}
 

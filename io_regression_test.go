@@ -115,39 +115,6 @@ func TestPreallocateFileSetsSize(t *testing.T) {
 	}
 }
 
-func BenchmarkParseContentRange(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		if err := validateContentRange("bytes 1048576-2097151/1073741824", 1048576, 2097151, 1073741824); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkPendingPieces(b *testing.B) {
-	m := newMeta([]string{"http://example.test/file"}, "file", probeInfo{Size: 4 << 30}, 1<<20)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		pieces := m.pendingPieces(64, 20<<20)
-		if len(pieces) == 0 {
-			b.Fatal("no pieces")
-		}
-	}
-}
-
-func BenchmarkCopyWithProgress(b *testing.B) {
-	data := bytes.Repeat([]byte("x"), 8<<20)
-	buf := make([]byte, 256<<10)
-	tracker := newProgressTracker("bench", int64(len(data)), 1, 1, "", time.Hour, nil)
-	b.SetBytes(int64(len(data)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		tracker.setCompleted(0)
-		if _, err := copyWithProgress(io.Discard, bytes.NewReader(data), buf, tracker); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 // Return a terminal error together with the final short read, as network
 // readers may do on EOF, cancellation, or a broken connection.
 type terminalChunkReader struct {
