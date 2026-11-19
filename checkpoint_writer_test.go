@@ -3,7 +3,6 @@ package hydra
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -35,7 +34,7 @@ func (w *partialCheckpointOutput) WriteAt(p []byte, off int64) (int, error) {
 	return n, err
 }
 
-func TestCheckpointWriterHashesOnlyAcceptedBytesAcrossRetries(t *testing.T) {
+func TestCheckpointWriterTracksOnlyAcceptedBytesAcrossRetries(t *testing.T) {
 	const blockSize = 32 << 10
 	data := make([]byte, 3*blockSize+123)
 	for i := range data {
@@ -60,7 +59,7 @@ func TestCheckpointWriterHashesOnlyAcceptedBytesAcrossRetries(t *testing.T) {
 			if w.next != int64(accepted) || m.donePieces() != accepted/blockSize {
 				t.Fatalf("unwritten bytes checkpointed: next=%d blocks=%d", w.next, m.donePieces())
 			}
-			// The same job resumes within the block, retaining its partial hash.
+			// Retry within the block; only a fully written block gets a completion bit.
 			// Split remaining writes across non-block-aligned buffers as well.
 			for off := accepted; off < len(data); {
 				end := min(off+19001, len(data))
@@ -73,11 +72,8 @@ func TestCheckpointWriterHashesOnlyAcceptedBytesAcrossRetries(t *testing.T) {
 			if w.completed != 4 || m.donePieces() != 4 {
 				t.Fatalf("completed=%d blocks=%d", w.completed, m.donePieces())
 			}
-			for i := 0; i < m.BlockCount; i++ {
-				want := sha256.Sum256(data[i*blockSize : min((i+1)*blockSize, len(data))])
-				if !bytes.Equal(m.hashes[i*sha256.Size:(i+1)*sha256.Size], want[:]) {
-					t.Fatalf("block %d hash mismatch", i)
-				}
+			if m.BlockHashes != "" {
+				t.Fatal("bitmap-only checkpoint unexpectedly contains block hashes")
 			}
 			got, err := os.ReadFile(path)
 			if err != nil {
@@ -90,7 +86,7 @@ func TestCheckpointWriterHashesOnlyAcceptedBytesAcrossRetries(t *testing.T) {
 	}
 }
 
-func TestCheckpointWriterDetectsDamageOnResume(t *testing.T) {
+func TestCheckpointWriterBitmapResumeDoesNotDetectLocalCorruption(t *testing.T) {
 	const blockSize = 32 << 10
 	path := filepath.Join(t.TempDir(), "file")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
@@ -117,14 +113,11 @@ func TestCheckpointWriterDetectsDamageOnResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := loaded.verifyCompletedBlocks(context.Background(), f); err != nil {
-		t.Fatal(err)
-	}
-	if testBit(loaded.bits, 1) || !testBit(loaded.bits, 2) {
-		t.Fatalf("damaged block trusted on resume: %08b", loaded.bits)
+	if !testBit(loaded.bits, 1) || !testBit(loaded.bits, 2) {
+		t.Fatalf("bitmap-only resume unexpectedly rechecked saved bytes: %08b", loaded.bits)
 	}
 	if _, err := w.WriteAt([]byte("out of order"), blockSize); err == nil {
-		t.Fatal("accepted an out-of-order hash input")
+		t.Fatal("accepted an out-of-order checkpoint write")
 	}
 }
 
@@ -259,7 +252,7 @@ func (r *oneShotTerminalReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func TestSegmentedHTTPRetryKeepsPartialBlockHash(t *testing.T) {
+func TestSegmentedHTTPRetryKeepsPartialBlockProgress(t *testing.T) {
 	const blockSize, interruptedAt = 32 << 10, 19001
 	data := make([]byte, 4*blockSize+123)
 	for i := range data {
@@ -309,15 +302,7 @@ func TestSegmentedHTTPRetryKeepsPartialBlockHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	if err := m.verifyCompletedBlocks(context.Background(), f); err != nil {
-		t.Fatal(err)
-	}
 	if m.donePieces() != 5 {
-		t.Fatal("retry lost hash state or published the wrong block digest")
+		t.Fatal("retry lost block completion or marked an unwritten block")
 	}
 }

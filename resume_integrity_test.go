@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -47,7 +48,7 @@ func seedSingleCheckpoint(t *testing.T, path, raw string, size int) {
 	}
 }
 
-func TestSingleResumeNeverTrustsDamagedOrUnidentifiedPrefix(t *testing.T) {
+func TestSingleResumeRequiresIdentityButDoesNotHashSavedPrefix(t *testing.T) {
 	for _, scenario := range []string{"bare-part", "damaged-prefix", "changed-etag", "no-validator"} {
 		t.Run(scenario, func(t *testing.T) {
 			old, current := integrityData(1), integrityData(2)
@@ -92,8 +93,13 @@ func TestSingleResumeNeverTrustsDamagedOrUnidentifiedPrefix(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if r.Resumed || sha256.Sum256(got) != sha256.Sum256(current) {
-				t.Fatal("unsafe prefix was reused")
+			if scenario == "damaged-prefix" {
+				// No local hash: the saved prefix is trusted when ETag and size match.
+				if !r.Resumed || sha256.Sum256(got) == sha256.Sum256(current) {
+					t.Fatal("bitmap resume unexpectedly detected damaged local bytes")
+				}
+			} else if r.Resumed || sha256.Sum256(got) != sha256.Sum256(current) {
+				t.Fatal("resumed without a matching checkpoint and strong validator")
 			}
 		})
 	}
@@ -143,7 +149,7 @@ func TestRangesRejectVersionChangeAfterProbe(t *testing.T) {
 	}
 }
 
-func TestResumeRepairsSameSizeDamagedCompletedBlock(t *testing.T) {
+func TestBitmapResumeDoesNotRepairDamagedCompletedBlock(t *testing.T) {
 	data := integrityData(1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"version-1"`)
@@ -163,7 +169,7 @@ func TestResumeRepairsSameSizeDamagedCompletedBlock(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, err = Download(context.Background(), Request{URLs: []string{srv.URL}, Out: path}, Options{Split: 4, MinSplitSize: 1})
+	r, err := Download(context.Background(), Request{URLs: []string{srv.URL}, Out: path}, Options{Split: 4, MinSplitSize: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,19 +177,20 @@ func TestResumeRepairsSameSizeDamagedCompletedBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sha256.Sum256(got) != sha256.Sum256(data) {
-		t.Fatal("damaged block was not repaired")
+	// Bitmap-only mode deliberately relies on an optional publisher checksum.
+	if !r.Resumed || sha256.Sum256(got) == sha256.Sum256(data) {
+		t.Fatal("expected a resumed transfer to trust already-completed bytes without rehashing")
 	}
 }
 
-func TestResumeRejectsUnauthenticatedCompletionBits(t *testing.T) {
+func TestBitmapResumeMetadataVersionAndCorruptionTradeoffs(t *testing.T) {
 	data := integrityData(1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"version-1"`)
 		http.ServeContent(w, r, "file", time.Time{}, bytes.NewReader(data))
 	}))
 	defer srv.Close()
-	for _, scenario := range []string{"missing-hashes", "wrong-hashes", "legacy-v2", "flipped-bit", "replaced-output"} {
+	for _, scenario := range []string{"missing-hashes", "wrong-hashes", "legacy-v2", "legacy-v3", "flipped-bit", "replaced-output"} {
 		t.Run(scenario, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "file")
 			seedIntegrityResume(t, path, srv.URL, data, `"version-1"`)
@@ -203,6 +210,9 @@ func TestResumeRejectsUnauthenticatedCompletionBits(t *testing.T) {
 			case "legacy-v2":
 				meta["version"] = 2
 				delete(meta, "block_hashes")
+			case "legacy-v3":
+				meta["version"] = 3
+				meta["block_hashes"] = base64.StdEncoding.EncodeToString(make([]byte, 8*sha256.Size))
 			case "flipped-bit":
 				meta["bitfield"] = base64.StdEncoding.EncodeToString([]byte{3})
 			case "replaced-output":
@@ -217,7 +227,7 @@ func TestResumeRejectsUnauthenticatedCompletionBits(t *testing.T) {
 			if err := os.WriteFile(sidecarPath(path), b, 0600); err != nil {
 				t.Fatal(err)
 			}
-			_, err = Download(context.Background(), Request{URLs: []string{srv.URL}, Out: path}, Options{Split: 4, MinSplitSize: 1})
+			r, err := Download(context.Background(), Request{URLs: []string{srv.URL}, Out: path}, Options{Split: 4, MinSplitSize: 1})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -225,8 +235,19 @@ func TestResumeRejectsUnauthenticatedCompletionBits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if sha256.Sum256(got) != sha256.Sum256(data) {
-				t.Fatal("unauthenticated bytes were published")
+			if scenario == "flipped-bit" || scenario == "replaced-output" {
+				// A forged bitmap or corrupted local file is not detected without
+				// a publisher checksum. This is an explicit integrity tradeoff.
+				if !r.Resumed || sha256.Sum256(got) == sha256.Sum256(data) {
+					t.Fatal("bitmap-only mode unexpectedly repaired locally corrupted bytes")
+				}
+			} else {
+				if sha256.Sum256(got) != sha256.Sum256(data) {
+					t.Fatal("mismatched content after a valid or migrated checkpoint")
+				}
+				if (scenario == "legacy-v2" || scenario == "legacy-v3") && r.Resumed {
+					t.Fatal("reused a previous-version checkpoint without migration")
+				}
 			}
 		})
 	}
@@ -264,5 +285,37 @@ func TestUnversionedDownloadsDoNotCombineResponses(t *testing.T) {
 				t.Fatal("combined unversioned responses")
 			}
 		})
+	}
+}
+
+// Bitmap checkpoints intentionally do not detect local corruption. When an
+// independently supplied publisher checksum is present, that verification
+// must still reject a resumed file containing damaged completed bytes.
+func TestPublisherChecksumRejectsCorruptedBitmapResume(t *testing.T) {
+	data := integrityData(1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"version-1"`)
+		http.ServeContent(w, r, "file", time.Time{}, bytes.NewReader(data))
+	}))
+	defer srv.Close()
+	path := filepath.Join(t.TempDir(), "file")
+	seedIntegrityResume(t, path, srv.URL, data, `"version-1"`)
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte{data[100] ^ 0xff}, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	expected := sha256.Sum256(data)
+	_, err = Download(context.Background(), Request{
+		URLs: []string{srv.URL}, Out: path,
+		Checksum: Checksum{Algorithm: "sha256", Value: fmt.Sprintf("%x", expected)},
+	}, Options{Split: 4, MinSplitSize: 1})
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("publisher checksum did not detect damaged resumed data: %v", err)
 	}
 }

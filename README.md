@@ -5,7 +5,7 @@ An HTTP/HTTPS downloader with parallel connections, resumable downloads, and che
 ## Features
 
 - Parallel downloads when the server supports byte ranges.
-- Resume interrupted downloads with checks for changed or damaged data.
+- Resume interrupted downloads using completion bitmaps and strong HTTP ETag identity checks.
 - Mirror failover and automatic retries.
 - HTTP, HTTPS, SOCKS5, and SOCKS5H proxies.
 - SHA-256, SHA-512, SHA-1, and MD5 checksum verification.
@@ -69,7 +69,9 @@ Set `SHA256` to the expected hexadecimal digest from the file's publisher.
 
 Press Ctrl+C to stop a download, then run the same command to resume. Keep the `.hydra` metadata and any `.part` files alongside the download.
 
-Resume requires a matching strong ETag from the server. If the server cannot identify the file reliably, or the saved data fails validation, Hydra restarts the affected data rather than trusting it. Parallel downloads require a strong ETag or a supplied checksum; otherwise Hydra uses a single connection.
+Resume uses a completion bitmap (sidecar format v4). Each completed range block is reused only when the server returns the same strong ETag and file size. Hydra does **not** compute SHA-256 or CRC32C for resume blocks and does **not** rehash previously saved bytes. A missing or changed strong ETag causes a restart, but silent local corruption cannot be detected by the bitmap alone. Supply a **publisher-provided full-file checksum** with `--checksum` to verify the result. Parallel downloads require a strong ETag or a supplied checksum; otherwise Hydra uses a single connection.
+
+On the first resume after upgrading from an older v3 (or earlier) checkpoint, Hydra discards the old progress bits and downloads those bytes again. It does not silently reinterpret the old SHA-256 sidecar as an unchecked bitmap.
 
 ### Options
 

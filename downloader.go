@@ -319,7 +319,9 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 		return Result{}, err
 	}
 	defer f.Close()
-	if err := meta.verifyCompletedBlocks(ctx, f); err != nil {
+	// Existing completion bits are trusted after size and strong ETag checks.
+	// No per-block checksum or file reread is performed on resume.
+	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
 	resumed = meta.completedBytes() > 0
@@ -412,14 +414,8 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 	if !d.opts.DisableResume && canResume {
 		if st, err := os.Stat(tmp); err == nil && st.Size() > 0 && (info.Size <= 0 || st.Size() < info.Size) {
 			if meta, err := loadMeta(sidecarPath(finalPath)); err == nil && meta.Single && meta.compatible(finalPath, info) && meta.PrefixSize == st.Size() {
-				if prefix, err := os.Open(tmp); err == nil {
-					digest, hashErr := hashFileBlock(prefix, 0, st.Size())
-					_ = prefix.Close()
-					if hashErr == nil && fmt.Sprintf("%x", digest) == meta.PrefixHash {
-						offset = st.Size()
-						resumed = true
-					}
-				}
+				offset = st.Size()
+				resumed = true
 			}
 		}
 	}

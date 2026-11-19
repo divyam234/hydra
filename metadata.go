@@ -1,9 +1,6 @@
 package hydra
 
 import (
-	"bytes"
-	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -16,9 +13,9 @@ import (
 	"time"
 )
 
-const metaVersionBitfield = 3
+const metaVersionBitfield = 4
 
-// Bound untrusted remote sizes and sidecars, including per-block SHA-256 data.
+// Bound untrusted remote sizes and sidecars. Version 4 uses bitmap-only resume.
 const maxResumeMetadataBytes = 64 << 20
 
 type pieceState string
@@ -73,23 +70,22 @@ type metaFile struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 
-	// Metadata v3 uses a compact bitfield: one bit per fixed-size
-	// resume block. A set bit means the complete byte range for that block is
-	// already durable on disk, accompanied by its SHA-256. This avoids JSON piece arrays and makes
-	// resume independent of the current split/concurrency setting.
+	// Metadata v4 records one completion bit per fixed-size resume block.
+	// A set bit means all bytes in that block were accepted by the file writer
+	// and published after data sync. Bytes are not cryptographically verified
+	// on resume; a separate publisher checksum provides end-to-end integrity.
 	BlockSize   int64  `json:"block_size,omitempty"`
 	BlockCount  int    `json:"block_count,omitempty"`
 	Bitfield    string `json:"bitfield,omitempty"`
-	BlockHashes string `json:"block_hashes,omitempty"`
+	BlockHashes string `json:"block_hashes,omitempty"` // Decode legacy v3 only; never generated.
 	Single      bool   `json:"single,omitempty"`
 	PrefixSize  int64  `json:"prefix_size,omitempty"`
-	PrefixHash  string `json:"prefix_sha256,omitempty"`
+	PrefixHash  string `json:"prefix_sha256,omitempty"` // Decode legacy v3 only.
 
 	// Pieces is retained only for v1 sidecar migration and omitted for new files.
 	Pieces []piece `json:"pieces,omitempty"`
 
 	bits     []byte     `json:"-"`
-	hashes   []byte     `json:"-"`
 	dirty    bool       `json:"-"`
 	lastSave time.Time  `json:"-"`
 	mu       sync.Mutex `json:"-"`
@@ -371,73 +367,48 @@ func (m *metaFile) markRangeComplete(start, end int64, sidecar string) (int, err
 	return m.markRangeCompleteFromFile(nil, start, end, sidecar)
 }
 
-func (m *metaFile) markBlockComplete(index int, digest [sha256.Size]byte) bool {
+// markBlockComplete publishes a full block only after its bytes have been
+// accepted by the output writer. The metadata flusher fsyncs those bytes
+// before persisting the completion bit.
+func (m *metaFile) markBlockComplete(index int) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if index < 0 || index >= m.BlockCount || testBit(m.bits, index) {
 		return false
 	}
-	m.ensureHashes()
-	copy(m.hashes[index*sha256.Size:], digest[:])
 	setBit(m.bits, index)
 	m.UpdatedAt = time.Now().UTC()
 	m.dirty = true
 	return true
 }
 
-func (m *metaFile) markRangeCompleteFromFile(f io.ReaderAt, start, end int64, sidecar string) (changed int, err error) {
-	_ = sidecar // kept in the signature for older internal call sites; saving is batched by saveIfDue.
+// markRangeCompleteFromFile is retained for internal fixtures and legacy
+// callers; it no longer reads or hashes the file. Production checkpointing
+// goes through checkpointWriter after successful positioned writes.
+func (m *metaFile) markRangeCompleteFromFile(_ io.ReaderAt, start, end int64, _ string) (int, error) {
 	m.mu.Lock()
-	defer func() {
-		// A later block may fail to hash after earlier blocks were published.
-		// Those successful completions still need to be checkpointed.
-		if changed > 0 {
-			m.UpdatedAt = time.Now().UTC()
-			m.dirty = true
-		}
-		m.mu.Unlock()
-	}()
+	defer m.mu.Unlock()
 	if m.Version != metaVersionBitfield {
 		return 0, nil
 	}
 	m.ensureBits()
-	if start < 0 {
-		start = 0
-	}
-	if end >= m.Size {
-		end = m.Size - 1
-	}
+	start = max(start, 0)
+	end = min(end, m.Size-1)
 	if end < start || m.BlockSize <= 0 {
 		return 0, nil
 	}
-	first := int(start / m.BlockSize)
-	last := int(end / m.BlockSize)
-	for i := first; i <= last && i < m.BlockCount; i++ {
+	changed := 0
+	for i := int(start / m.BlockSize); i <= int(end/m.BlockSize) && i < m.BlockCount; i++ {
 		blockStart := int64(i) * m.BlockSize
-		blockSize := m.blockSize(i)
-		blockEnd := blockStart + blockSize - 1
+		blockEnd := blockStart + m.blockSize(i) - 1
 		if start <= blockStart && end >= blockEnd && !testBit(m.bits, i) {
-			if f != nil {
-				// Range workers own disjoint, block-aligned ranges. Once a block
-				// is fully written its bytes are stable, so its disk read and hash
-				// need not serialize unrelated workers or checkpoint snapshots.
-				m.mu.Unlock()
-				digest, err := hashFileBlock(f, blockStart, blockSize)
-				m.mu.Lock()
-				if err != nil {
-					return changed, err
-				}
-				// Another completion caller may have published this block while
-				// the lock was released. Count and publish it only once.
-				if testBit(m.bits, i) {
-					continue
-				}
-				m.ensureHashes()
-				copy(m.hashes[i*sha256.Size:], digest[:])
-			}
 			setBit(m.bits, i)
 			changed++
 		}
+	}
+	if changed > 0 {
+		m.UpdatedAt = time.Now().UTC()
+		m.dirty = true
 	}
 	return changed, nil
 }
@@ -478,17 +449,7 @@ func (m *metaFile) markDone(index int, sidecar string) error {
 	now := time.Now().UTC()
 	if m.Version == metaVersionBitfield {
 		m.ensureBits()
-		// Internal helper used by fixtures and legacy callers. Production marks
-		// blocks via checkpointWriter using the bytes accepted by the output.
-		if f, err := os.Open(m.Path); err == nil {
-			digest, hashErr := hashFileBlock(f, int64(index)*m.BlockSize, m.blockSize(index))
-			_ = f.Close()
-			if hashErr != nil {
-				return hashErr
-			}
-			m.ensureHashes()
-			copy(m.hashes[index*sha256.Size:], digest[:])
-		}
+		// Legacy fixture helper; production checkpoints come from successful writes.
 		setBit(m.bits, index)
 		m.syncBitfield()
 		m.UpdatedAt = now
@@ -559,7 +520,7 @@ func loadMeta(sidecar string) (*metaFile, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, err
 	}
-	if m.Version != 0 && m.Version != 1 && m.Version != 2 && m.Version != metaVersionBitfield {
+	if m.Version < 0 || m.Version > metaVersionBitfield {
 		return nil, errors.New("unsupported resume metadata version")
 	}
 	if err := validateMetadataSize(m.Size, m.BlockSize); err != nil {
@@ -579,9 +540,6 @@ func validateMetadataSize(size, blockSize int64) error {
 	if size > 0 && (size-1)/blockSize >= int64(maxResumeMetadataBytes)*8 {
 		return errors.New("resume bitfield exceeds 64 MiB; increase ResumeBlockSize")
 	}
-	if size > 0 && (size-1)/blockSize >= int64(maxResumeMetadataBytes)/(sha256.Size+1) {
-		return errors.New("resume integrity metadata exceeds 64 MiB; increase ResumeBlockSize")
-	}
 	return nil
 }
 
@@ -593,16 +551,18 @@ func (m *metaFile) normalize() {
 				m.bits = decoded
 			}
 		}
-		if decoded, err := base64.StdEncoding.DecodeString(m.BlockHashes); err == nil && len(decoded) == blockCount(m.Size, m.BlockSize)*sha256.Size {
-			m.hashes = decoded
-		}
 		m.ensureBits()
 		return
 	}
-	// Old checkpoints did not authenticate completed blocks. Restart rather
-	// than carrying forward potentially corrupted data from those versions.
+	// v3 SHA-256 checkpoints and earlier formats are not trusted by v4.
+	// Restart an unfinished transfer rather than silently downgrading its
+	// integrity guarantees or mixing metadata representations.
 	m.Version = metaVersionBitfield
 	m.bits = nil
+	m.Bitfield = ""
+	m.BlockHashes = ""
+	m.PrefixHash = ""
+	m.PrefixSize = 0
 	m.Pieces = nil
 	m.ensureBits()
 }
@@ -645,7 +605,8 @@ func (m *metaFile) saveLocked(sidecar string) error {
 	if m.Version == metaVersionBitfield {
 		m.ensureBits()
 		m.syncBitfield()
-		m.BlockHashes = base64.StdEncoding.EncodeToString(m.hashes)
+		m.BlockHashes = ""
+		m.PrefixHash = ""
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -671,60 +632,6 @@ func (m *metaFile) saveLocked(sidecar string) error {
 		return err
 	}
 	return syncDir(filepath.Dir(sidecar))
-}
-
-func (m *metaFile) ensureHashes() {
-	if len(m.hashes) != m.BlockCount*sha256.Size {
-		m.hashes = make([]byte, m.BlockCount*sha256.Size)
-	}
-}
-
-var hashBufferPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, DefaultBufferSize)
-		return &buf
-	},
-}
-
-func hashFileBlock(f io.ReaderAt, start, size int64) ([sha256.Size]byte, error) {
-	buf := hashBufferPool.Get().(*[]byte)
-	defer hashBufferPool.Put(buf)
-	h := sha256.New()
-	n, err := io.CopyBuffer(h, io.NewSectionReader(f, start, size), *buf)
-	if err == nil && n != size {
-		err = io.ErrUnexpectedEOF
-	}
-	var digest [sha256.Size]byte
-	h.Sum(digest[:0])
-	return digest, err
-}
-
-// Never trust a completion bit without checking the actual saved bytes. A
-// damaged block is made pending and overwritten, not published or skipped.
-func (m *metaFile) verifyCompletedBlocks(ctx context.Context, f *os.File) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := 0; i < m.BlockCount; i++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if !testBit(m.bits, i) {
-			continue
-		}
-		valid := len(m.hashes) == m.BlockCount*sha256.Size
-		if valid {
-			digest, err := hashFileBlock(f, int64(i)*m.BlockSize, m.blockSize(i))
-			if err != nil {
-				return err
-			}
-			valid = bytes.Equal(digest[:], m.hashes[i*sha256.Size:(i+1)*sha256.Size])
-		}
-		if !valid {
-			clearBit(m.bits, i)
-			m.dirty = true
-		}
-	}
-	return nil
 }
 
 func sidecarPath(path string) string { return path + ".hydra" }

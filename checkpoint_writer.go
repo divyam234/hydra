@@ -1,26 +1,23 @@
 package hydra
 
 import (
-	"crypto/sha256"
 	"fmt"
-	"hash"
 	"io"
 )
 
-// checkpointWriter belongs to one block-aligned range job and survives that
-// job's HTTP retries. Hash only bytes accepted by the output, in offset order.
-// Resume still checks the actual file bytes against these expected digests;
-// saveIfDueAfterSync still syncs output before publishing the checkpoint.
+// checkpointWriter tracks fully written resume blocks. The payload is written
+// directly to the destination; no per-block digest is computed. A block is
+// marked complete only after the output writer accepts its final byte.
+// Metadata is published only after the file data has been synced.
 type checkpointWriter struct {
 	output    io.WriterAt
 	meta      *metaFile
-	hash      hash.Hash
 	next      int64
 	completed int
 }
 
 func newCheckpointWriter(output io.WriterAt, meta *metaFile, start int64) *checkpointWriter {
-	return &checkpointWriter{output: output, meta: meta, hash: sha256.New(), next: start}
+	return &checkpointWriter{output: output, meta: meta, next: start}
 }
 
 func (w *checkpointWriter) WriteAt(p []byte, off int64) (int, error) {
@@ -28,21 +25,15 @@ func (w *checkpointWriter) WriteAt(p []byte, off int64) (int, error) {
 		return 0, fmt.Errorf("nonsequential checkpoint write at %d (expected %d)", off, w.next)
 	}
 	n, err := w.output.WriteAt(p, off)
-	accepted := p[:n]
-	for len(accepted) > 0 {
+	accepted := int64(n)
+	for accepted > 0 {
 		index := int(w.next / w.meta.BlockSize)
 		remaining := min(w.meta.BlockSize-w.next%w.meta.BlockSize, w.meta.Size-w.next)
-		count := min(int64(len(accepted)), remaining)
-		_, _ = w.hash.Write(accepted[:count])
+		count := min(accepted, remaining)
 		w.next += count
-		accepted = accepted[count:]
-		if count == remaining {
-			var digest [sha256.Size]byte
-			w.hash.Sum(digest[:0])
-			if w.meta.markBlockComplete(index, digest) {
-				w.completed++
-			}
-			w.hash.Reset()
+		accepted -= count
+		if count == remaining && w.meta.markBlockComplete(index) {
+			w.completed++
 		}
 	}
 	return n, err

@@ -1,5 +1,54 @@
 # Correctness and performance audit
 
+## Bitmap-only resume checkpoints (2026-11-19)
+
+Hydra's segmented and single-stream HTTP resume now use **completion bits /
+byte offsets rather than per-block SHA-256 or CRC32C**. This is an explicit
+throughput/CPU-versus-integrity decision, matching the ordinary HTTP resume
+approach used by download managers such as aria2c. A full-file checksum supplied
+by the publisher is still supported independently with `--checksum`.
+
+- Segmented resume persists one bitmap bit per fully written block. In-flight
+  writes, retries, adaptive work stealing, mirror validation, data fsync before
+  metadata publication, and strong ETag / size / Last-Modified checks remain.
+- Single-stream resume saves the `.part` byte offset after fsync and reuses it
+  only with matching source identity, without hashing the saved prefix.
+- **Metadata version 4** stores no block or prefix hashes. An older v3 or
+  earlier sidecar triggers a one-time restart instead of reinterpreting hashed
+  checkpoints as unchecked completion bits.
+- Completed local blocks are **not rehashed on resume**. Corrupted local bytes
+  or forged bitmap bits are not detected by this mechanism; use an independently
+  supplied publisher checksum for end-to-end verification. A strong ETag
+  identifies the server representation but is not a cryptographic file digest.
+
+**CPU A/B benchmark:** ARM64 Neoverse-N1, Go 1.27.3 / CGO off, GOMAXPROCS=2,
+256 MiB HTTP Range file, 256 KiB buffers, 16 or 8 configured connections,
+arithmetic means over four throttled or five unthrottled independent runs.
+Tools use the same `adda015` adaptive scheduler. Every output was
+independently SHA-256 verified *after* timing; checksums were not computed by
+Hydra's bitmap-only mode.
+
+| Server | Conns | SHA-256 mode wall s | Bitmap wall s | SHA-256 mode CPU s | Bitmap CPU s | CPU decrease |
+|---|---:|---:|---:|---:|---:|---:|
+| Per-GET 8 MiB/s + 40 ms request latency | 8 | 4.204 | 4.204 | 0.573 | **0.320** | **44%** |
+| Per-GET 8 MiB/s + 40 ms request latency | 16 | 2.278 | 2.273 | 0.520 | **0.315** | **39%** |
+| Local unthrottled | 8 | 0.505 | **0.469** | 0.462 | **0.262** | **43%** |
+| Local unthrottled | 16 | 0.540 | **0.467** | 0.480 | **0.276** | **43%** |
+
+RSS remained ~8.5–9.0 MiB at eight connections and ~11.4–11.7 MiB at
+sixteen connections. Download time on a bandwidth-capped source changed
+negligibly, while the unthrottled server showed ~7–14% faster completion.
+These are local loopback results, **not a prediction for HTTPS WAN transfers**.
+
+The original per-block SHA-256, corruption-repair, and checkpoint audit
+results in older sections below describe historical versions, not the new
+bitmap-only behavior.
+
+Raw local experiment (outside this repository):
+`../download-bench-20261119/results/bitmap-resume/throttled/raw.csv`,
+`../download-bench-20261119/results/bitmap-resume/unthrottled/raw.csv`,
+and reproducible `../download-bench-20261119/benchmark_bitmap_resume.py`.
+
 ## Adaptive work-stealing range scheduling (2026-11-19)
 
 A separate experimental branch (`perf/adaptive-range-scheduling`) replaces the
@@ -367,8 +416,8 @@ Use the same Go toolchain and build flags for the baseline and audited binaries.
 - Loopback performance includes the Python HTTP server and OS page cache, not just downloader overhead. The throttled mode simulates a per-connection rate ceiling, not WAN latency, loss, or congestion.
 - Buffered write plus fsync measures the selected filesystem; cached reads are **not** physical disk read bandwidth. No global cache dropping or raw-device writes are performed.
 - Data-before-metadata ordering is regression-tested with a sync hook. Actual power-loss recovery requires filesystem/device-specific crash testing and is not established here.
-- Resume always validates a matching strong ETag and saved-byte hashes. Changed or missing identity causes a restart; damaged blocks are redownloaded. A publisher-provided checksum additionally verifies final content against an independent reference.
-- Combined resume bitfield/hash storage is limited to 64 MiB (approximately 1.94 TiB of data at the default 1 MiB block size); sidecar JSON is limited to 128 MiB. Increase `ResumeBlockSize` for larger segmented transfers. This is an explicit resource-safety limit, not an assertion of tested physical downloads at those sizes.
+- Current version 4 resume validates matching strong ETag, file size, and Last-Modified identity, but **does not hash previously completed blocks**. Missing/changed identity forces a restart; damaged local blocks are not automatically repaired. An independently supplied publisher checksum can verify final content.
+- The resume bitfield is capped at 64 MiB and sidecar JSON at 128 MiB. Increase `ResumeBlockSize` for exceptionally large files. Older capacity calculations assuming SHA-256 per block no longer apply to metadata v4.
 - The default 60-second timeout is a whole-request deadline, including the body. Very large requests on slow links may require a larger `Timeout`/`--timeout`. The sparse-file and arithmetic tests do not establish sustained multi-gigabyte WAN transfer performance.
 - A real-network comparison can exercise one selected server/route, not establish performance across the internet. Its source must remain stable across range requests and repetitions; every output is checked against a reference SHA-256. The remote mode disables proxy environment settings for timed tools and bounds the reference fetch, not a server that changes unexpectedly afterward.
 - HTTP3, torrents, FTP, browser extensions, and cross-platform runtime behavior are outside these measurements. No new protocol or browser extension is implemented by this audit.
