@@ -1,5 +1,58 @@
 # Correctness and performance audit
 
+## Adaptive work-stealing range scheduling (2026-11-19)
+
+A separate experimental branch (`perf/adaptive-range-scheduling`) replaces the
+fixed `4 * connections` HTTP Range work queue with *one initial range per
+connection*, plus on-demand stealing. When a worker becomes idle it splits the
+largest other worker's **unreserved tail** on a resume-block boundary. Each
+worker reserves its next socket-read buffer before another worker can shorten
+that range, avoiding overlapping file writes, SHA-256 checkpoint blocks, and
+misleading completion bits. The original checkpoint format, range validation,
+mirror retries, and data-before-metadata syncing are preserved.
+
+**Uniform throughput benchmark** — ARM64 NixOS, 2 logical CPUs available,
+Go 1.27.3 with `CGO_ENABLED=0` for both source builds, 256 MiB local HTTP
+range file, 40 ms request delay, 8 MiB/s per GET, five independent runs per
+client/connection setting, all outputs verified by SHA-256.
+
+| Connections | Client | Mean wall s | Mean CPU s | Peak RSS MiB | GETs/file |
+|---:|---|---:|---:|---:|---:|
+| 8 | Original (`ad5f561`) | 4.336 | 0.650 | 8.74 | 32 |
+| 8 | Adaptive | 4.198 | 0.644 | 8.72 | 8 |
+| 8 | aria2c 1.37.0 | 4.369 | 0.462 | 24.48 | 8 |
+| 16 | Original (`ad5f561`) | 2.323 | 0.622 | 11.74 | 64 |
+| 16 | Adaptive | 2.334 | 0.618 | 11.52 | 16 |
+| 16 | aria2c 1.37.0 | 2.339 | 0.456 | 30.45 | 16 |
+
+**Unbalanced connection benchmark** — same server settings, except a request
+starting at byte `251658240` is limited to 2 MiB/s. Three runs at 16
+connections:
+
+| Client | Mean wall s | Mean CPU s | GETs/file |
+|---|---:|---:|---:|
+| Original Hydra (4x pieces) | 3.650 | 0.617 | 64 |
+| Adaptive Hydra | 3.029 | 0.607 | 26 |
+| One fixed piece per connection (no steals) | 8.004 | 0.577 | 16 |
+| aria2c 1.37.0 | 2.748 | 0.503 | 27 |
+
+The new scheduler cut completion time ~17% vs the original on this
+controlled uneven connection, but **did not demonstrate a meaningful CPU
+reduction** (less than 2% in these small samples). Against the original,
+its uniform-server CPU differences are within run-to-run noise. Fixed-N has
+lower CPU in some runs but stalls badly with an uneven connection. In this
+test aria2c still used less CPU than either Hydra scheduler.
+
+`go test ./...`, `go test -race ./...`, and `go vet ./...` were run.
+Additional tests stress concurrent range reservations, a slow HTTP source,
+cancel/resume after stealing, and resumed output byte correctness.
+
+Reproduction source and raw measurements (local machine, not committed to
+this repo): `../download-bench-20261119/compare_adaptive.py`,
+`../download-bench-20261119/results/adaptive-ab/raw.csv`, and
+`../download-bench-20261119/results/adaptive-skew/raw.csv`. These are
+synthetic loopback results, not a universal WAN or TLS performance result.
+
 ## Streaming checkpoint hashes and batched writes (2026-11-06)
 
 Compared unmodified `b11d79340f22` with the current segmented download path:

@@ -335,7 +335,7 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 	tracker.emit(StateDownloading, "", true)
 	d.emitEvent(Event{Kind: EventDownloading, ID: req.ID, URL: info.URL, Path: finalPath, Time: time.Now()})
 
-	jobs := make(chan piece)
+	scheduler := newRangeScheduler(meta.pendingPieces(max(d.opts.Split, connections), d.opts.MinSplitSize), meta.BlockSize, d.opts.MinSplitSize)
 	errCh := make(chan error, 1)
 	flusher := startMetadataFlusher(meta, sidecar, d.opts.MetadataFlushInterval, f.Sync)
 	ctx, cancel := context.WithCancel(ctx)
@@ -345,12 +345,17 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 	var wg sync.WaitGroup
 	for i := 0; i < connections; i++ {
 		wg.Add(1)
-		go func(worker int) {
+		go func() {
 			defer wg.Done()
-			for p := range jobs {
+			for ctx.Err() == nil {
+				lease := scheduler.claim()
+				if lease == nil {
+					return
+				}
 				tracker.incActive()
-				err := d.downloadPieceWithRetry(ctx, req.ID, req.URLs, headers, output, p, meta, tracker, flusher)
+				err := d.downloadPieceWithRetryLease(ctx, req.ID, req.URLs, headers, output, lease.job, meta, tracker, flusher, lease)
 				tracker.decActive()
+				scheduler.finish(lease)
 				if err != nil {
 					select {
 					case errCh <- err:
@@ -361,20 +366,10 @@ func (d *Downloader) downloadSegmented(ctx context.Context, req Request, headers
 				}
 				// Only block-bit transitions increment the counter. Replacing it
 				// with a metadata snapshot races with other workers' increments.
-				d.emitEvent(Event{Kind: EventPieceDone, ID: req.ID, URL: info.URL, Path: finalPath, PieceIndex: p.Index, Total: info.Size, Completed: tracker.completed.Load(), Time: time.Now(), Progress: tracker.snapshot(StateDownloading, "", time.Now())})
+				d.emitEvent(Event{Kind: EventPieceDone, ID: req.ID, URL: info.URL, Path: finalPath, PieceIndex: lease.job.Index, Total: info.Size, Completed: tracker.completed.Load(), Time: time.Now(), Progress: tracker.snapshot(StateDownloading, "", time.Now())})
 			}
-		}(i)
+		}()
 	}
-
-enqueue:
-	for _, p := range meta.pendingPieces(max(d.opts.Split, connections*4), d.opts.MinSplitSize) {
-		select {
-		case <-ctx.Done():
-			break enqueue
-		case jobs <- p:
-		}
-	}
-	close(jobs)
 	wg.Wait()
 	if err := flusher.close(); err != nil {
 		return Result{}, err
@@ -505,6 +500,10 @@ func (d *Downloader) downloadSingle(ctx context.Context, req Request, headers ht
 }
 
 func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls []string, headers http.Header, f *rangeFile, p piece, meta *metaFile, tracker *progressTracker, flusher *metadataFlusher) error {
+	return d.downloadPieceWithRetryLease(ctx, id, urls, headers, f, p, meta, tracker, flusher, nil)
+}
+
+func (d *Downloader) downloadPieceWithRetryLease(ctx context.Context, id string, urls []string, headers http.Header, f *rangeFile, p piece, meta *metaFile, tracker *progressTracker, flusher *metadataFlusher, lease *rangeLease) error {
 	var last error
 	badURLs := make(map[string]bool)
 	tries := max(1, d.opts.MaxRetries+1)
@@ -524,20 +523,27 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 				return ctx.Err()
 			}
 			reqStart := p.Start + done
+			reqEnd := p.End
+			if lease != nil {
+				reqEnd = lease.limit()
+			}
+			if reqStart > reqEnd {
+				return nil
+			}
 			started := time.Now()
-			n, err := d.downloadPiece(ctx, raw, headers, output, reqStart, p.End, meta.Size, tracker, func(_ int64) error {
+			n, err := d.downloadPieceLease(ctx, raw, headers, output, reqStart, reqEnd, meta.Size, tracker, func(_ int64) error {
 				if output.completed > 0 {
 					tracker.addPiecesDone(int64(output.completed))
 					output.completed = 0
 					flusher.request()
 				}
 				return nil
-			})
+			}, lease)
 			d.mirrors.observe(raw, n, time.Since(started), err)
 			if n > 0 {
 				done += n
 			}
-			if done == p.size() && err == nil {
+			if err == nil && ((lease == nil && done == p.size()) || (lease != nil && p.Start+done > lease.limit())) {
 				return nil
 			}
 			if err == nil {
@@ -571,6 +577,10 @@ func (d *Downloader) downloadPieceWithRetry(ctx context.Context, id string, urls
 }
 
 func (d *Downloader) downloadPiece(ctx context.Context, raw string, headers http.Header, f io.WriterAt, start, end, total int64, tracker *progressTracker, onWrite func(int64) error) (int64, error) {
+	return d.downloadPieceLease(ctx, raw, headers, f, start, end, total, tracker, onWrite, nil)
+}
+
+func (d *Downloader) downloadPieceLease(ctx context.Context, raw string, headers http.Header, f io.WriterAt, start, end, total int64, tracker *progressTracker, onWrite func(int64) error, lease *rangeLease) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
 		return 0, err
@@ -596,7 +606,7 @@ func (d *Downloader) downloadPiece(ctx context.Context, raw string, headers http
 	}
 	buf := d.getBuffer()
 	defer d.putBuffer(buf)
-	return copyRangeToFile(f, resp.Body, start, end-start+1, buf, tracker, onWrite)
+	return copyRangeToFileLease(f, resp.Body, start, end-start+1, buf, tracker, onWrite, lease)
 }
 
 func (d *Downloader) getToWriterWithRetry(ctx context.Context, id string, urls []string, headers http.Header, w io.Writer, offset int64, total int64, tracker *progressTracker) error {
@@ -727,11 +737,24 @@ func (f *rangeFile) WriteAt(p []byte, off int64) (int, error) {
 }
 
 func copyRangeToFile(f io.WriterAt, r io.Reader, off int64, expected int64, buf []byte, tracker *progressTracker, onWrite func(int64) error) (int64, error) {
+	return copyRangeToFileLease(f, r, off, expected, buf, tracker, onWrite, nil)
+}
+
+func copyRangeToFileLease(f io.WriterAt, r io.Reader, off int64, expected int64, buf []byte, tracker *progressTracker, onWrite func(int64) error, lease *rangeLease) (int64, error) {
 	var written int64
 	for written < expected {
 		readBuf := buf
 		if remaining := expected - written; int64(len(readBuf)) > remaining {
 			readBuf = readBuf[:int(remaining)]
+		}
+		if lease != nil {
+			// Reserve before reading: a concurrent stealer may shorten only
+			// the range *after* this buffer, never inside an in-flight read.
+			limit := lease.reserve(off+written, len(readBuf))
+			if limit == 0 {
+				return written, nil
+			}
+			readBuf = readBuf[:limit]
 		}
 		// Socket reads can be much shorter than the buffer. Coalesce them to
 		// reduce write syscalls and write-lock handoffs, but preserve an error
